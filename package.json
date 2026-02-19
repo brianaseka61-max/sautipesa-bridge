@@ -1,0 +1,14 @@
+{
+  "name": "sautipesa-bridge",
+  "version": "1.0.0",
+  "description": "M-Pesa to SautiPesa Android Bridge",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.13.0",
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
