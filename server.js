@@ -7,23 +7,33 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
+// --- DEBUGGING MIDDLEWARE ---
+// This logs every request to your Render logs so you can see if the app hits the wrong URL
+app.use((req, res, next) => {
+    console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
 // 1. Initialize Supabase
 const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY // Use Service Key for server-side bypass of RLS
+    process.env.SUPABASE_SERVICE_KEY
 );
 
-// --- HEALTH CHECK ENDPOINT (To keep Render awake) ---
+// --- ROOT ROUTE (To test if the server is live in a browser) ---
+app.get('/', (req, res) => {
+    res.status(200).send('🚀 Sauti Pesa Bridge is Online and Ready!');
+});
+
+// --- HEALTH CHECK ENDPOINT ---
 app.get('/health', (req, res) => {
-    console.log(`❤️ Health check received at ${new Date().toISOString()}`);
     res.status(200).send('Sauti Pesa Bridge is Awake');
 });
 
-// --- NEW: POLLING ENDPOINT (Required for MainActivity Native Polling) ---
+// --- POLLING ENDPOINT ---
 app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
     const { shortcode } = req.params;
     try {
-        // Fetch the latest successful transaction for this business in the last 60 seconds
         const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
         
         const { data, error } = await supabase
@@ -34,10 +44,10 @@ app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
             .gt('created_at', oneMinuteAgo)
             .order('created_at', { ascending: false })
             .limit(1)
-            .single();
+            .maybeSingle(); // Use maybeSingle to avoid 406 errors if empty
 
         if (error || !data) {
-            return res.status(204).end(); // No new payments
+            return res.status(204).end(); 
         }
 
         res.status(200).json(data);
@@ -46,9 +56,10 @@ app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
     }
 });
 
-// --- BUSINESS REGISTRATION ENDPOINT (For OnboardingActivity) ---
+// --- BUSINESS REGISTRATION ENDPOINT (Fixed for OnboardingActivity) ---
 app.post('/api/business/register', async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+    console.log(`📝 Attempting registration for: ${shortcode}`);
 
     try {
         const { data, error } = await supabase
@@ -64,40 +75,33 @@ app.post('/api/business/register', async (req, res) => {
 
         if (error) throw error;
 
-        console.log(`🏢 New Business Registered: ${business_name} (${shortcode})`);
+        console.log(`✅ Registration Successful: ${business_name}`);
         res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
     } catch (err) {
-        console.error("Registration Error:", err.message);
+        console.error("❌ Registration Error:", err.message);
         res.status(500).json({ status: "error", error: err.message });
     }
 });
 
-// 2. Setup WebSocket Server with Room Logic
+// 2. Setup WebSocket Server
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`🚀 SautiPesa Multi-Tenant Bridge Live on Port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`🚀 SautiPesa Bridge Live on Port ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// Store clients by their shortcode
 const rooms = new Map(); 
 
 wss.on('connection', (ws) => {
-    console.log('📱 New App Connection Attempted');
-    
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
             if (data.type === 'join_room') {
                 const shortcode = data.shortcode; 
                 ws.shortcode = shortcode;
-                
-                if (!rooms.has(shortcode)) {
-                    rooms.set(shortcode, new Set());
-                }
+                if (!rooms.has(shortcode)) rooms.set(shortcode, new Set());
                 rooms.get(shortcode).add(ws);
-                console.log(`👤 Business joined room: ${shortcode}`);
             }
         } catch (e) {
-            console.error("WS Message Error:", e.message);
+            console.error("WS Error:", e.message);
         }
     });
 
@@ -105,7 +109,6 @@ wss.on('connection', (ws) => {
         if (ws.shortcode && rooms.has(ws.shortcode)) {
             rooms.get(ws.shortcode).delete(ws);
             if (rooms.get(ws.shortcode).size === 0) rooms.delete(ws.shortcode);
-            console.log(`❌ Business ${ws.shortcode} disconnected`);
         }
     });
 });
@@ -118,7 +121,7 @@ const getBusinessCredentials = async (shortcode) => {
         .eq('shortcode', shortcode)
         .single();
 
-    if (error || !biz) throw new Error(`Credentials not found for shortcode: ${shortcode}`);
+    if (error || !biz) throw new Error(`Credentials not found for ${shortcode}`);
 
     const auth = Buffer.from(`${biz.consumer_key}:${biz.consumer_secret}`).toString('base64');
     const res = await axios.get('https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials', {
@@ -128,10 +131,9 @@ const getBusinessCredentials = async (shortcode) => {
     return { token: res.data.access_token, passkey: biz.passkey };
 };
 
-// 4. Multi-Tenant STK Push Initiation
+// 4. STK Push Initiation
 app.post('/api/mpesa/stkpush', async (req, res) => {
     const { phone, amount, shortcode } = req.body;
-
     try {
         const { token, passkey } = await getBusinessCredentials(shortcode);
         const timestamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
@@ -148,21 +150,19 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
             "PhoneNumber": phone,
             "CallBackURL": `https://sautipesa-bridge.onrender.com/api/mpesa/callback/${shortcode}`,
             "AccountReference": "SautiPesa",
-            "TransactionDesc": `Payment to ${shortcode}`
+            "TransactionDesc": `Payment`
         };
 
         const response = await axios.post('https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest', requestBody, {
             headers: { Authorization: `Bearer ${token}` }
         });
-        
         res.status(200).json(response.data);
     } catch (err) {
-        console.error("STK Push Error:", err.response?.data || err.message);
-        res.status(500).json({ error: "Failed to initiate STK Push" });
+        res.status(500).json({ error: "STK Push Failed" });
     }
 });
 
-// 5. THE DYNAMIC CALLBACK
+// 5. CALLBACK
 app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
     const { shortcode } = req.params;
     const callbackData = req.body.Body.stkCallback;
@@ -175,21 +175,22 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
 
         await supabase.from('transactions').insert([{ 
             business_shortcode: shortcode,
-            receipt, 
-            amount, 
-            phone, 
-            status: 'SUCCESS' 
+            receipt, amount, phone, status: 'SUCCESS' 
         }]);
 
         if (rooms.has(shortcode)) {
-            const msg = JSON.stringify({
-                type: 'payment_received',
-                data: { amount, phone, receipt }
-            });
+            const msg = JSON.stringify({ type: 'payment_received', data: { amount, phone, receipt } });
             rooms.get(shortcode).forEach(client => {
                 if (client.readyState === 1) client.send(msg);
             });
         }
     }
-    res.status(200).send("Callback Received");
+    res.status(200).send("OK");
+});
+
+// --- CATCH-ALL 404 HANDLER ---
+// If the app hits a URL not defined above, this will log it
+app.use((req, res) => {
+    console.warn(`⚠️ 404 Alert: App tried to reach non-existent route: ${req.url}`);
+    res.status(404).json({ error: "Route not found. Check your Android code URL." });
 });
