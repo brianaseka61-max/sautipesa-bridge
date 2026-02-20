@@ -13,12 +13,44 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_KEY // Use Service Key for server-side bypass of RLS
 );
 
+// --- NEW: HEALTH CHECK ENDPOINT (To keep Render awake) ---
+app.get('/health', (req, res) => {
+    console.log(`❤️ Health check received at ${new Date().toISOString()}`);
+    res.status(200).send('Sauti Pesa Bridge is Awake');
+});
+
+// --- NEW: BUSINESS REGISTRATION ENDPOINT (For OnboardingActivity) ---
+app.post('/api/business/register', async (req, res) => {
+    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+
+    try {
+        const { data, error } = await supabase
+            .from('businesses')
+            .upsert({ 
+                business_name, 
+                shortcode, 
+                consumer_key, 
+                consumer_secret, 
+                passkey,
+                updated_at: new Date() 
+            }, { onConflict: 'shortcode' });
+
+        if (error) throw error;
+
+        console.log(`🏢 New Business Registered: ${business_name} (${shortcode})`);
+        res.status(201).json({ message: "Registration Successful", shortcode });
+    } catch (err) {
+        console.error("Registration Error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // 2. Setup WebSocket Server with Room Logic
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => console.log(`🚀 SautiPesa Multi-Tenant Bridge Live on Port ${PORT}`));
 const wss = new WebSocketServer({ server });
 
-// Store clients by their shortcode (for unique room routing)
+// Store clients by their shortcode
 const rooms = new Map(); 
 
 wss.on('connection', (ws) => {
@@ -27,7 +59,6 @@ wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            // Business App sends: { "type": "join_room", "shortcode": "174379" }
             if (data.type === 'join_room') {
                 const shortcode = data.shortcode; 
                 ws.shortcode = shortcode;
@@ -52,7 +83,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-// 3. Helper: Generate Access Token for a specific Business
+// 3. Helper: Generate Access Token
 const getBusinessCredentials = async (shortcode) => {
     const { data: biz, error } = await supabase
         .from('businesses')
@@ -88,7 +119,7 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
             "PartyA": phone,
             "PartyB": shortcode,
             "PhoneNumber": phone,
-            "CallBackURL": `https://your-app-name.render.com/api/mpesa/callback/${shortcode}`,
+            "CallBackURL": `https://sautipesa-bridge.onrender.com/api/mpesa/callback/${shortcode}`,
             "AccountReference": "SautiPesa",
             "TransactionDesc": `Payment to ${shortcode}`
         };
@@ -104,7 +135,7 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
     }
 });
 
-// 5. THE DYNAMIC CALLBACK (The "Magic" Link)
+// 5. THE DYNAMIC CALLBACK
 app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
     const { shortcode } = req.params;
     const callbackData = req.body.Body.stkCallback;
@@ -115,7 +146,6 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
         const receipt = metadata.find(i => i.Name === 'MpesaReceiptNumber').Value;
         const phone = metadata.find(i => i.Name === 'PhoneNumber').Value;
 
-        // A. Log transaction in Supabase
         await supabase.from('transactions').insert([{ 
             business_shortcode: shortcode,
             receipt, 
@@ -124,7 +154,6 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
             status: 'SUCCESS' 
         }]);
 
-        // B. Send real-time alert to the specific Business App
         if (rooms.has(shortcode)) {
             const msg = JSON.stringify({
                 type: 'payment_received',
