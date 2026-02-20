@@ -13,13 +13,40 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_KEY // Use Service Key for server-side bypass of RLS
 );
 
-// --- NEW: HEALTH CHECK ENDPOINT (To keep Render awake) ---
+// --- HEALTH CHECK ENDPOINT (To keep Render awake) ---
 app.get('/health', (req, res) => {
     console.log(`❤️ Health check received at ${new Date().toISOString()}`);
     res.status(200).send('Sauti Pesa Bridge is Awake');
 });
 
-// --- NEW: BUSINESS REGISTRATION ENDPOINT (For OnboardingActivity) ---
+// --- NEW: POLLING ENDPOINT (Required for MainActivity Native Polling) ---
+app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
+    const { shortcode } = req.params;
+    try {
+        // Fetch the latest successful transaction for this business in the last 60 seconds
+        const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
+        
+        const { data, error } = await supabase
+            .from('transactions')
+            .select('amount, phone, receipt')
+            .eq('business_shortcode', shortcode)
+            .eq('status', 'SUCCESS')
+            .gt('created_at', oneMinuteAgo)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error || !data) {
+            return res.status(204).end(); // No new payments
+        }
+
+        res.status(200).json(data);
+    } catch (err) {
+        res.status(500).json({ error: "Polling failed" });
+    }
+});
+
+// --- BUSINESS REGISTRATION ENDPOINT (For OnboardingActivity) ---
 app.post('/api/business/register', async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
 
@@ -38,10 +65,10 @@ app.post('/api/business/register', async (req, res) => {
         if (error) throw error;
 
         console.log(`🏢 New Business Registered: ${business_name} (${shortcode})`);
-        res.status(201).json({ message: "Registration Successful", shortcode });
+        res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
     } catch (err) {
         console.error("Registration Error:", err.message);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ status: "error", error: err.message });
     }
 });
 
