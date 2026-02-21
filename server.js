@@ -13,13 +13,14 @@ app.use((req, res, next) => {
     next();
 });
 
-// 1. Initialize Supabase (Updated with fallback naming)
+// 1. Initialize Supabase (Updated based on your screenshot keys)
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+// This line now checks for the exact key in your screenshot: SUPABASE_SERVICE_ROLE_KEY
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-    console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing from Environment Variables!");
-    console.log("Check Render -> Environment -> Ensure SUPABASE_URL and SUPABASE_SERVICE_KEY are set.");
+    console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing!");
+    console.log("Check Render Dashboard -> Environment. Ensure keys match SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -31,7 +32,46 @@ app.get('/', (req, res) => {
 
 // --- HEALTH CHECK ---
 app.get('/health', (req, res) => {
-    res.status(200).send('Sauti Pesa Bridge is Awake');
+    // If Supabase isn't initialized, this will help us diagnose it
+    if (!supabaseUrl || !supabaseKey) {
+        return res.status(500).json({ status: "error", message: "Supabase credentials missing on server" });
+    }
+    res.status(200).json({ status: "ok", message: "Sauti Pesa Bridge is Awake" });
+});
+
+// --- BUSINESS REGISTRATION ENDPOINT ---
+app.post('/api/business/register', async (req, res) => {
+    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+    console.log(`📝 Attempting registration for shortcode: ${shortcode}`);
+
+    try {
+        const { data, error } = await supabase
+            .from('businesses')
+            .upsert({ 
+                business_name, 
+                shortcode, 
+                consumer_key, 
+                consumer_secret, 
+                passkey,
+                updated_at: new Date() 
+            }, { onConflict: 'shortcode' });
+
+        if (error) {
+            console.error("❌ Supabase Insert Error:", error.message);
+            throw error;
+        }
+        
+        console.log(`✅ Registration Successful for: ${business_name}`);
+        res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
+    } catch (err) {
+        // This is where your 500 error was likely being triggered
+        console.error("❌ Registration Error:", err.message);
+        res.status(500).json({ 
+            status: "error", 
+            message: "Database connection failed. Ensure the 'businesses' table exists in Supabase.",
+            details: err.message 
+        });
+    }
 });
 
 // --- POLLING ENDPOINT ---
@@ -56,35 +96,9 @@ app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
     }
 });
 
-// --- BUSINESS REGISTRATION ENDPOINT ---
-app.post('/api/business/register', async (req, res) => {
-    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
-    console.log(`📝 Attempting registration for: ${shortcode}`);
-
-    try {
-        const { data, error } = await supabase
-            .from('businesses')
-            .upsert({ 
-                business_name, 
-                shortcode, 
-                consumer_key, 
-                consumer_secret, 
-                passkey,
-                updated_at: new Date() 
-            }, { onConflict: 'shortcode' });
-
-        if (error) throw error;
-        console.log(`✅ Registration Successful: ${business_name}`);
-        res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
-    } catch (err) {
-        console.error("❌ Registration Error:", err.message);
-        res.status(500).json({ status: "error", error: err.message });
-    }
-});
-
 // 2. Setup WebSocket Server
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`🚀 SautiPesa Bridge Live on Port ${PORT}`));
+const server = app.listen(PORT, '0.0.0.0', () => console.log(`🚀 SautiPesa Bridge Live on Port ${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const rooms = new Map(); 
