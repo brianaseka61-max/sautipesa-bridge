@@ -13,14 +13,13 @@ app.use((req, res, next) => {
     next();
 });
 
-// 1. Initialize Supabase (Updated based on your screenshot keys)
+// 1. Initialize Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-// This line now checks for the exact key in your screenshot: SUPABASE_SERVICE_ROLE_KEY
+// Matches your Render screenshot: SUPABASE_SERVICE_ROLE_KEY
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
     console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing!");
-    console.log("Check Render Dashboard -> Environment. Ensure keys match SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -32,9 +31,8 @@ app.get('/', (req, res) => {
 
 // --- HEALTH CHECK ---
 app.get('/health', (req, res) => {
-    // If Supabase isn't initialized, this will help us diagnose it
     if (!supabaseUrl || !supabaseKey) {
-        return res.status(500).json({ status: "error", message: "Supabase credentials missing on server" });
+        return res.status(500).json({ status: "error", message: "Credentials missing" });
     }
     res.status(200).json({ status: "ok", message: "Sauti Pesa Bridge is Awake" });
 });
@@ -45,6 +43,7 @@ app.post('/api/business/register', async (req, res) => {
     console.log(`📝 Attempting registration for shortcode: ${shortcode}`);
 
     try {
+        // FIXED: Removed 'updated_at' because it doesn't exist in your SQL table structure
         const { data, error } = await supabase
             .from('businesses')
             .upsert({ 
@@ -52,23 +51,21 @@ app.post('/api/business/register', async (req, res) => {
                 shortcode, 
                 consumer_key, 
                 consumer_secret, 
-                passkey,
-                updated_at: new Date() 
+                passkey
             }, { onConflict: 'shortcode' });
 
         if (error) {
-            console.error("❌ Supabase Insert Error:", error.message);
+            console.error("❌ Supabase Error:", error.message);
             throw error;
         }
         
         console.log(`✅ Registration Successful for: ${business_name}`);
         res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
     } catch (err) {
-        // This is where your 500 error was likely being triggered
         console.error("❌ Registration Error:", err.message);
         res.status(500).json({ 
             status: "error", 
-            message: "Database connection failed. Ensure the 'businesses' table exists in Supabase.",
+            message: "Database save failed.",
             details: err.message 
         });
     }
@@ -203,6 +200,5 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
 
 // --- CATCH-ALL 404 HANDLER ---
 app.use((req, res) => {
-    console.warn(`⚠️ 404 Alert: App tried to reach non-existent route: ${req.url}`);
-    res.status(404).json({ error: "Route not found. Check your Android code URL." });
+    res.status(404).json({ error: "Route not found." });
 });
