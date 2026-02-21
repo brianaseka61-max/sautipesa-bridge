@@ -14,12 +14,12 @@ app.use((req, res, next) => {
 });
 
 // 1. Initialize Supabase
+// Using the exact Key from your Render Dashboard screenshot
 const supabaseUrl = process.env.SUPABASE_URL;
-// Matches your Render screenshot: SUPABASE_SERVICE_ROLE_KEY
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-    console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing!");
+    console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing from Environment Variables!");
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -32,7 +32,7 @@ app.get('/', (req, res) => {
 // --- HEALTH CHECK ---
 app.get('/health', (req, res) => {
     if (!supabaseUrl || !supabaseKey) {
-        return res.status(500).json({ status: "error", message: "Credentials missing" });
+        return res.status(500).json({ status: "error", message: "Supabase credentials missing on server" });
     }
     res.status(200).json({ status: "ok", message: "Sauti Pesa Bridge is Awake" });
 });
@@ -43,7 +43,7 @@ app.post('/api/business/register', async (req, res) => {
     console.log(`📝 Attempting registration for shortcode: ${shortcode}`);
 
     try {
-        // FIXED: Removed 'updated_at' because it doesn't exist in your SQL table structure
+        // REMOVED 'updated_at' to match your Supabase SQL schema exactly
         const { data, error } = await supabase
             .from('businesses')
             .upsert({ 
@@ -65,7 +65,7 @@ app.post('/api/business/register', async (req, res) => {
         console.error("❌ Registration Error:", err.message);
         res.status(500).json({ 
             status: "error", 
-            message: "Database save failed.",
+            message: "Database save failed. Ensure 'updated_at' column is NOT being sent.",
             details: err.message 
         });
     }
@@ -168,7 +168,8 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
         });
         res.status(200).json(response.data);
     } catch (err) {
-        res.status(500).json({ error: "STK Push Failed" });
+        console.error("❌ STK Push Error:", err.message);
+        res.status(500).json({ error: "STK Push Failed", details: err.message });
     }
 });
 
@@ -183,9 +184,13 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
         const receipt = metadata.find(i => i.Name === 'MpesaReceiptNumber').Value;
         const phone = metadata.find(i => i.Name === 'PhoneNumber').Value;
 
+        // Ensure this matches your 'transactions' table schema
         await supabase.from('transactions').insert([{ 
             business_shortcode: shortcode,
-            receipt, amount, phone, status: 'SUCCESS' 
+            receipt, 
+            amount: amount.toString(), 
+            phone: phone.toString(), 
+            status: 'SUCCESS' 
         }]);
 
         if (rooms.has(shortcode)) {
@@ -200,5 +205,5 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
 
 // --- CATCH-ALL 404 HANDLER ---
 app.use((req, res) => {
-    res.status(404).json({ error: "Route not found." });
+    res.status(404).json({ error: "Route not found. Check your endpoint URL." });
 });
