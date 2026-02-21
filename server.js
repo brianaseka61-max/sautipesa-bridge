@@ -8,24 +8,28 @@ const app = express();
 app.use(express.json());
 
 // --- DEBUGGING MIDDLEWARE ---
-// This logs every request to your Render logs so you can see if the app hits the wrong URL
 app.use((req, res, next) => {
     console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
 
-// 1. Initialize Supabase
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-);
+// 1. Initialize Supabase (Updated with fallback naming)
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
-// --- ROOT ROUTE (To test if the server is live in a browser) ---
+if (!supabaseUrl || !supabaseKey) {
+    console.error("❌ CRITICAL ERROR: Supabase URL or Key is missing from Environment Variables!");
+    console.log("Check Render -> Environment -> Ensure SUPABASE_URL and SUPABASE_SERVICE_KEY are set.");
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// --- ROOT ROUTE ---
 app.get('/', (req, res) => {
     res.status(200).send('🚀 Sauti Pesa Bridge is Online and Ready!');
 });
 
-// --- HEALTH CHECK ENDPOINT ---
+// --- HEALTH CHECK ---
 app.get('/health', (req, res) => {
     res.status(200).send('Sauti Pesa Bridge is Awake');
 });
@@ -35,7 +39,6 @@ app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
     const { shortcode } = req.params;
     try {
         const oneMinuteAgo = new Date(Date.now() - 60000).toISOString();
-        
         const { data, error } = await supabase
             .from('transactions')
             .select('amount, phone, receipt')
@@ -44,19 +47,16 @@ app.get('/api/mpesa/check-payments/:shortcode', async (req, res) => {
             .gt('created_at', oneMinuteAgo)
             .order('created_at', { ascending: false })
             .limit(1)
-            .maybeSingle(); // Use maybeSingle to avoid 406 errors if empty
+            .maybeSingle();
 
-        if (error || !data) {
-            return res.status(204).end(); 
-        }
-
+        if (error || !data) return res.status(204).end(); 
         res.status(200).json(data);
     } catch (err) {
         res.status(500).json({ error: "Polling failed" });
     }
 });
 
-// --- BUSINESS REGISTRATION ENDPOINT (Fixed for OnboardingActivity) ---
+// --- BUSINESS REGISTRATION ENDPOINT ---
 app.post('/api/business/register', async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
     console.log(`📝 Attempting registration for: ${shortcode}`);
@@ -74,7 +74,6 @@ app.post('/api/business/register', async (req, res) => {
             }, { onConflict: 'shortcode' });
 
         if (error) throw error;
-
         console.log(`✅ Registration Successful: ${business_name}`);
         res.status(201).json({ status: "success", message: "Registration Successful", shortcode });
     } catch (err) {
@@ -189,7 +188,6 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
 });
 
 // --- CATCH-ALL 404 HANDLER ---
-// If the app hits a URL not defined above, this will log it
 app.use((req, res) => {
     console.warn(`⚠️ 404 Alert: App tried to reach non-existent route: ${req.url}`);
     res.status(404).json({ error: "Route not found. Check your Android code URL." });
