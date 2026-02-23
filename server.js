@@ -1,3 +1,8 @@
+Here is your fully updated `server.js` code.
+
+I have integrated the **safety defaults** for the `business_name`, improved the **error logging** to help you catch schema mismatches, and ensured that the `upsert` logic remains compatible with your current Supabase structure.
+
+```javascript
 const express = require('express');
 const axios = require('axios');
 const { WebSocketServer } = require('ws');
@@ -14,7 +19,6 @@ app.use((req, res, next) => {
 });
 
 // 1. Initialize Supabase
-// Using the exact Key from your Render Dashboard screenshot
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
@@ -37,13 +41,26 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: "ok", message: "Sauti Pesa Bridge is Awake" });
 });
 
-// --- BUSINESS REGISTRATION ENDPOINT ---
+// --- UPDATED BUSINESS REGISTRATION ENDPOINT ---
 app.post('/api/business/register', async (req, res) => {
-    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+    // Added safety default to prevent "NOT NULL" violations in Supabase
+    const { 
+        business_name = "New Business", 
+        shortcode, 
+        consumer_key, 
+        consumer_secret, 
+        passkey 
+    } = req.body;
+
     console.log(`📝 Attempting registration for shortcode: ${shortcode}`);
 
+    if (!shortcode) {
+        return res.status(400).json({ status: "error", message: "Shortcode is required" });
+    }
+
     try {
-        // REMOVED 'updated_at' to match your Supabase SQL schema exactly
+        // 'updated_at' is excluded here. Ensure your Supabase column name 
+        // matches 'business_name' exactly (case-sensitive).
         const { data, error } = await supabase
             .from('businesses')
             .upsert({ 
@@ -55,7 +72,7 @@ app.post('/api/business/register', async (req, res) => {
             }, { onConflict: 'shortcode' });
 
         if (error) {
-            console.error("❌ Supabase Error:", error.message);
+            console.error("❌ Supabase Error Details:", error);
             throw error;
         }
         
@@ -65,7 +82,7 @@ app.post('/api/business/register', async (req, res) => {
         console.error("❌ Registration Error:", err.message);
         res.status(500).json({ 
             status: "error", 
-            message: "Database save failed. Ensure 'updated_at' column is NOT being sent.",
+            message: "Database save failed. Check Supabase column names.",
             details: err.message 
         });
     }
@@ -184,7 +201,6 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
         const receipt = metadata.find(i => i.Name === 'MpesaReceiptNumber').Value;
         const phone = metadata.find(i => i.Name === 'PhoneNumber').Value;
 
-        // Ensure this matches your 'transactions' table schema
         await supabase.from('transactions').insert([{ 
             business_shortcode: shortcode,
             receipt, 
@@ -207,3 +223,18 @@ app.post('/api/mpesa/callback/:shortcode', async (req, res) => {
 app.use((req, res) => {
     res.status(404).json({ error: "Route not found. Check your endpoint URL." });
 });
+
+```
+
+---
+
+### ⚠️ Critical Step Before Testing
+
+Even with this updated code, you must **restart the Render server** properly to clear the internal cache:
+
+1. Push this code to your GitHub.
+2. Go to **Render Dashboard**.
+3. Click **Manual Deploy** -> **Clear build cache & deploy**.
+4. Once the status is **Live**, try registering "Green Grocers Ltd" again.
+
+**Would you like me to show you how to check the Render Logs if you still get a 500 error after this update?**
