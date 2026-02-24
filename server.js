@@ -5,10 +5,11 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// --- DEBUG LOGGER ---
-// This will show every request in your Render logs so you know the app is connected
+// --- LOGGING MIDDLEWARE ---
+// This prints every request to your Render logs for easy debugging
 app.use((req, res, next) => {
-    console.log(`📡 [${new Date().toISOString()}] Incoming ${req.method} to ${req.url}`);
+    console.log(`📡 [${new Date().toISOString()}] ${req.method} to ${req.url}`);
+    if (req.method === 'POST') console.log('📦 Data Received:', JSON.stringify(req.body));
     next();
 });
 
@@ -18,23 +19,23 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
-// 1. ROOT ROUTE
-app.get('/', (req, res) => res.status(200).send('🚀 Bridge is 100% Ready'));
+// 1. ROOT ROUTE (For manual browser testing)
+app.get('/', (req, res) => res.status(200).send('🚀 SautiPesa Bridge is Live'));
 
-// 2. HEALTH CHECK ROUTE (Required for ServerLinkActivity.java)
+// 2. HEALTH CHECK (What ServerLinkActivity looks for)
 app.get('/health', (req, res) => {
-    console.log("✅ Health check passed: App and Server are talking!");
-    res.status(200).json({ status: "ok", message: "Bridge is Active" });
+    console.log("✅ Health check received from App");
+    res.status(200).json({ status: "ok" });
 });
 
-// 3. BUSINESS REGISTRATION
-app.post('/api/business/register', async (req, res) => {
+// 3. REGISTRATION HANDLER
+const handleRegistration = async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
     
-    console.log(`📝 ATTEMPTING DATABASE WRITE FOR: ${shortcode}`);
+    console.log(`📝 Attempting DB write for: ${shortcode}`);
 
     try {
-        const { data, error } = await supabase
+        const { error } = await supabase
             .from('businesses')
             .upsert({
                 business_name: business_name || "New Business",
@@ -45,18 +46,24 @@ app.post('/api/business/register', async (req, res) => {
             }, { onConflict: 'shortcode' });
 
         if (error) {
-            console.error("❌ SUPABASE REJECTED DATA:", error.message);
-            return res.status(500).json({ error: error.message });
+            console.error("❌ SUPABASE REJECTED:", error.message);
+            return res.status(500).json({ error: error.message, hint: error.hint });
         }
 
-        console.log("✅ DATABASE WRITE SUCCESSFUL");
+        console.log("✅ SUCCESS: Business Registered in Supabase");
         res.status(201).json({ status: "success" });
 
     } catch (err) {
-        console.error("❌ CRITICAL SYSTEM ERROR:", err.message);
+        console.error("❌ CRITICAL SERVER ERROR:", err.message);
         res.status(500).json({ error: "Internal Bridge Error" });
     }
-});
+};
+
+// Supporting both path styles for maximum compatibility
+app.post('/register', handleRegistration);
+app.post('/api/business/register', handleRegistration);
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Bridge running on port ${PORT}`);
+});
