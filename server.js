@@ -8,13 +8,17 @@ app.use(express.json());
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Root & Health Checks
-app.get('/', (req, res) => res.send('Bridge Active'));
-app.get('/health', (req, res) => res.json({ status: "ok" }));
+// Health check to verify the server is live
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: "ok" });
+});
 
-// Onboarding Route
+// Root route
+app.get('/', (req, res) => res.send('Bridge is Active'));
+
+// Registration route
 app.post('/register', async (req, res) => {
-    console.log("📥 Incoming Data:", req.body);
+    console.log("📥 Data received:", req.body);
     const { shortcode, business_name, consumer_key, consumer_secret, passkey } = req.body;
 
     try {
@@ -29,10 +33,10 @@ app.post('/register', async (req, res) => {
         if (error) throw error;
         res.status(201).json({ status: "success" });
     } catch (err) {
-        console.error("❌ DB Error:", err.message);
+        console.error("❌ Error:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server ready on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Ready on port ${PORT}`));
