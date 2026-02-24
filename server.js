@@ -3,13 +3,17 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
+
+// Middleware
 app.use(express.json());
 
-// --- LOGGING MIDDLEWARE ---
-// This prints every request to your Render logs for easy debugging
+// --- 1. GLOBAL REQUEST LOGGER ---
+// This ensures every single hit is logged, even if the route is wrong
 app.use((req, res, next) => {
-    console.log(`📡 [${new Date().toISOString()}] ${req.method} to ${req.url}`);
-    if (req.method === 'POST') console.log('📦 Data Received:', JSON.stringify(req.body));
+    console.log(`📡 [${new Date().toISOString()}] ${req.method} request to: ${req.url}`);
+    if (req.method === 'POST') {
+        console.log('📦 Payload:', JSON.stringify(req.body));
+    }
     next();
 });
 
@@ -19,20 +23,27 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
-// 1. ROOT ROUTE (For manual browser testing)
-app.get('/', (req, res) => res.status(200).send('🚀 SautiPesa Bridge is Live'));
+// --- 2. ENDPOINTS ---
 
-// 2. HEALTH CHECK (What ServerLinkActivity looks for)
+// Root
+app.get('/', (req, res) => res.status(200).send('🚀 SautiPesa Bridge is Live and Active'));
+
+// Health Check (Success here means Android can talk to Render)
 app.get('/health', (req, res) => {
-    console.log("✅ Health check received from App");
-    res.status(200).json({ status: "ok" });
+    console.log("✅ Health handshake successful");
+    res.status(200).json({ status: "ok", timestamp: new Date() });
 });
 
-// 3. REGISTRATION HANDLER
+// Registration Logic
 const handleRegistration = async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
     
-    console.log(`📝 Attempting DB write for: ${shortcode}`);
+    if (!shortcode || !consumer_key || !consumer_secret) {
+        console.error("⚠️ Validation Failed: Missing required fields");
+        return res.status(400).json({ error: "Missing required API credentials" });
+    }
+
+    console.log(`📝 Database Write: Attempting for shortcode ${shortcode}`);
 
     try {
         const { error } = await supabase
@@ -50,8 +61,8 @@ const handleRegistration = async (req, res) => {
             return res.status(500).json({ error: error.message, hint: error.hint });
         }
 
-        console.log("✅ SUCCESS: Business Registered in Supabase");
-        res.status(201).json({ status: "success" });
+        console.log("✅ SUCCESS: Business saved to database");
+        res.status(201).json({ status: "success", message: "Business registered" });
 
     } catch (err) {
         console.error("❌ CRITICAL SERVER ERROR:", err.message);
@@ -59,11 +70,25 @@ const handleRegistration = async (req, res) => {
     }
 };
 
-// Supporting both path styles for maximum compatibility
+// --- 3. ROUTE MAPPING ---
+// Supporting every possible variation to ensure logs aren't empty
 app.post('/register', handleRegistration);
+app.post('/register/', handleRegistration);
 app.post('/api/business/register', handleRegistration);
+
+// --- 4. ERROR FALLBACK ---
+// If the app hits a URL that doesn't exist, this will log it
+app.use((req, res) => {
+    console.error(`🚫 404 Not Found: ${req.method} ${req.url}`);
+    res.status(404).json({ error: "Route not found. Check app URL configuration." });
+});
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Bridge running on port ${PORT}`);
+    console.log(`
+    **************************************
+    🚀 Bridge Server Running on Port ${PORT}
+    ✅ Routes: /health, /register
+    **************************************
+    `);
 });
