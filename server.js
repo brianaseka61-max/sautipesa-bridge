@@ -3,7 +3,22 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
+
+// Set a long timeout for the entire app to handle Render's wake-up delay
+const timeout = require('connect-timeout');
+app.use(timeout('90s')); 
+
 app.use(express.json());
+
+// --- 1. GLOBAL REQUEST LOGGER ---
+// This ensures every single hit is logged, even if the route is slightly wrong
+app.use((req, res, next) => {
+    console.log(`📡 [${new Date().toISOString()}] ${req.method} request to: ${req.url}`);
+    if (req.method === 'POST') {
+        console.log('📦 Payload:', JSON.stringify(req.body));
+    }
+    next();
+});
 
 // Initialize Supabase
 const supabase = createClient(
@@ -11,48 +26,74 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
-// --- 📡 DEBUGGING MIDDLEWARE ---
-app.use((req, res, next) => {
-    console.log(`🚀 [${new Date().toISOString()}] ${req.method} to ${req.url}`);
-    next();
-});
+// --- 2. ENDPOINTS ---
 
-// 1. HEALTH CHECK (For ServerLinkActivity)
+// Root
+app.get('/', (req, res) => res.status(200).send('🚀 SautiPesa Bridge is Live and Active'));
+
+// Health Check (Success here means Android can talk to Render)
 app.get('/health', (req, res) => {
-    res.status(200).json({ status: "ok", message: "Bridge is Active" });
+    console.log("✅ Health handshake successful");
+    res.status(200).json({ status: "ok", timestamp: new Date() });
 });
 
-// 2. ONBOARDING REGISTRATION
-app.post('/register', async (req, res) => {
+// Registration Logic
+const handleRegistration = async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
     
-    console.log(`📥 Received registration for shortcode: ${shortcode}`);
+    // Strict validation to prevent empty DB rows
+    if (!shortcode || !consumer_key || !consumer_secret) {
+        console.error("⚠️ Validation Failed: Missing required fields");
+        return res.status(400).json({ error: "Missing required API credentials" });
+    }
+
+    console.log(`📝 Database Write: Attempting for shortcode ${shortcode}`);
 
     try {
-        // Ensure shortcode is treated as a string to match Supabase schema
         const { error } = await supabase
             .from('businesses')
             .upsert({
                 business_name: business_name || "New Business",
-                shortcode: String(shortcode),
-                consumer_key: consumer_key,
-                consumer_secret: consumer_secret,
-                passkey: passkey
+                shortcode: String(shortcode).trim(), // Sanitize input
+                consumer_key: String(consumer_key).trim(),
+                consumer_secret: String(consumer_secret).trim(),
+                passkey: String(passkey).trim()
             }, { onConflict: 'shortcode' });
 
         if (error) {
-            console.error("❌ Supabase Error:", error.message);
-            return res.status(500).json({ error: error.message });
+            console.error("❌ SUPABASE REJECTED:", error.message);
+            return res.status(500).json({ error: error.message, hint: error.hint });
         }
 
-        console.log("✅ Database write successful!");
-        res.status(201).json({ status: "success" });
+        console.log("✅ SUCCESS: Business saved to database");
+        res.status(201).json({ status: "success", message: "Business registered" });
 
     } catch (err) {
-        console.error("❌ Server Crash:", err.message);
-        res.status(500).json({ error: "Internal Server Error" });
+        console.error("❌ CRITICAL SERVER ERROR:", err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Internal Bridge Error" });
+        }
     }
+};
+
+// --- 3. ROUTE MAPPING ---
+// Supporting every possible variation to ensure logs aren't empty
+app.post('/register', handleRegistration);
+app.post('/register/', handleRegistration);
+app.post('/api/business/register', handleRegistration);
+
+// --- 4. ERROR FALLBACK ---
+app.use((req, res) => {
+    console.error(`🚫 404 Not Found: ${req.method} ${req.url}`);
+    res.status(404).json({ error: "Route not found. Check app URL configuration." });
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Bridge running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+    **************************************
+    🚀 Bridge Server Running on Port ${PORT}
+    ✅ Routes: /health, /register
+    **************************************
+    `);
+});
