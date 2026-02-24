@@ -9,19 +9,20 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 app.post('/register', async (req, res) => {
-    // This will show us EXACTLY what the app is sending in your Render logs
-    console.log("📥 Raw Body Received:", JSON.stringify(req.body));
+    // Log exactly what arrived to debug naming issues
+    console.log("📥 RECEIVED BODY:", JSON.stringify(req.body));
 
-    // Flexible extraction to catch different naming conventions
-    const shortcode = req.body.shortcode || req.body.etShortcode;
-    const business_name = req.body.business_name || req.body.name || "SautiPesa User";
-    const consumer_key = req.body.consumer_key || req.body.key;
-    const consumer_secret = req.body.consumer_secret || req.body.secret;
-    const passkey = req.body.passkey;
+    // Flexible extraction: Checks both standard keys and common Android UI names
+    const shortcode = req.body.shortcode || req.body.et_shortcode;
+    const business_name = req.body.business_name || req.body.et_biz_name || "New Business";
+    const consumer_key = req.body.consumer_key || req.body.et_consumer_key;
+    const consumer_secret = req.body.consumer_secret || req.body.et_consumer_secret;
+    const passkey = req.body.passkey || req.body.et_passkey;
 
+    // Validation: If the app sent nothing, don't even try Supabase
     if (!shortcode || !consumer_key) {
-        console.error("❌ Missing Required Fields:", { shortcode, consumer_key });
-        return res.status(400).json({ error: "Missing shortcode or consumer_key" });
+        console.error("❌ REJECTED: Missing Shortcode or Key in payload");
+        return res.status(400).json({ error: "Missing required fields", received: req.body });
     }
 
     try {
@@ -37,15 +38,15 @@ app.post('/register', async (req, res) => {
             }, { onConflict: 'shortcode' });
 
         if (error) {
-            console.error("❌ Supabase DB Error:", error.message);
+            console.error("❌ SUPABASE ERROR:", error.message);
             return res.status(500).json({ error: error.message });
         }
 
-        console.log("✅ Success! Business stored for shortcode:", shortcode);
+        console.log("✅ SUCCESS: Saved business", shortcode);
         res.status(201).json({ status: "success" });
     } catch (err) {
-        console.error("❌ Server Exception:", err.message);
-        res.status(500).json({ error: "Internal Server Error" });
+        console.error("❌ CRITICAL ERROR:", err.message);
+        res.status(500).json({ error: "Server Exception" });
     }
 });
 
