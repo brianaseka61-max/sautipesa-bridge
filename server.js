@@ -24,13 +24,13 @@ app.post('/callback', async (req, res) => {
             
             // Map the data to the exact column names required by your Supabase table
             const payload = {
-                receipt: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value, // Changed to match your 'receipt' column
+                receipt: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value, // Fixed: changed from receipt_number
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
-                phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
+                phone: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Fixed: changed from phone_number
                 transaction_date: new Date().toISOString()
             };
 
-            console.log(`✅ Attempting Supabase Save with Receipt: ${payload.receipt}`);
+            console.log(`✅ Attempting Supabase Save: Receipt=${payload.receipt}, Phone=${payload.phone}`);
 
             const { error } = await supabase.from('transactions').insert([payload]);
 
@@ -42,12 +42,12 @@ app.post('/callback', async (req, res) => {
         }
         res.status(200).send("Success");
     } catch (err) {
-        console.error("❌ ERROR:", err.message);
+        console.error("❌ PROCESSING ERROR:", err.message);
         res.status(200).send("Error Handled");
     }
 });
 
-const PORT = 10000;
+const PORT = 10000; // Matches your Render log port
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Bridge listening on Port ${PORT}`);
 });
