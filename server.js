@@ -22,22 +22,27 @@ app.post('/callback', async (req, res) => {
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
             
-            // Map the data to the exact column names required by your Supabase table
+            // Get the receipt from ReqBin
+            let originalReceipt = metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
+            
+            // ADDED: Random suffix so you never get a "Duplicate Key" error again during testing
+            const testReceipt = originalReceipt + "_" + Math.floor(Math.random() * 10000);
+
             const payload = {
-                receipt: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value, // Fixed: changed from receipt_number
+                receipt: testReceipt, // Matches your 'receipt' column
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
-                phone: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Fixed: changed from phone_number
+                phone: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Matches your 'phone' column
                 transaction_date: new Date().toISOString()
             };
 
-            console.log(`✅ Attempting Supabase Save: Receipt=${payload.receipt}, Phone=${payload.phone}`);
+            console.log(`✅ Attempting Unique Save: Receipt=${payload.receipt}`);
 
             const { error } = await supabase.from('transactions').insert([payload]);
 
             if (error) {
                 console.error("❌ SUPABASE ERROR:", error.message);
             } else {
-                console.log("🚀 SUCCESS: Saved to Supabase!");
+                console.log(`🚀 SUCCESS: Saved ${payload.receipt} to Supabase!`);
             }
         }
         res.status(200).send("Success");
@@ -47,7 +52,7 @@ app.post('/callback', async (req, res) => {
     }
 });
 
-const PORT = 10000; // Matches your Render log port
+const PORT = 10000; 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Bridge listening on Port ${PORT}`);
 });
