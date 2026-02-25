@@ -17,6 +17,57 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Bridge is Live and Waiting!");
 });
 
+// 💰 NEW: M-Pesa Callback Route (The Bridge to Supabase Transactions)
+app.post('/callback', async (req, res) => {
+    console.log("🔔 CALLBACK RECEIVED:", JSON.stringify(req.body));
+
+    try {
+        const stkCallback = req.body.Body.stkCallback;
+        
+        // ResultCode 0 means the transaction was successful
+        if (stkCallback && stkCallback.ResultCode === 0) {
+            const metadata = stkCallback.CallbackMetadata.Item;
+            
+            // Extract specific values from the M-Pesa Metadata array
+            const amount = metadata.find(i => i.Name === 'Amount')?.Value;
+            const receipt = metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
+            const phone = metadata.find(i => i.Name === 'PhoneNumber')?.Value;
+            const date = metadata.find(i => i.Name === 'TransactionDate')?.Value;
+
+            console.log(`✅ Processing Payment: ${receipt} | Amount: ${amount} | From: ${phone}`);
+
+            // Insert into Supabase 'transactions' table
+            const { data, error } = await supabase
+                .from('transactions')
+                .insert([
+                    {
+                        receipt_number: receipt,
+                        amount: amount,
+                        phone_number: String(phone),
+                        transaction_date: String(date),
+                        status: 'completed',
+                        raw_data: req.body // Keep full record for safety
+                    }
+                ]);
+
+            if (error) {
+                console.error("❌ SUPABASE INSERT ERROR:", error.message);
+            } else {
+                console.log("🚀 Transaction recorded in Supabase successfully.");
+            }
+        } else {
+            console.log("⚠️ Transaction was cancelled or failed by user.");
+        }
+
+        // Always respond with 200 to Safaricom to acknowledge receipt
+        res.status(200).send("Success");
+
+    } catch (err) {
+        console.error("❌ CALLBACK PROCESSING ERROR:", err.message);
+        res.status(200).send("Error handled but acknowledged");
+    }
+});
+
 app.post('/register', async (req, res) => {
     // 📝 Log raw body to Render logs immediately
     console.log("📥 RECEIVED BODY:", JSON.stringify(req.body));
@@ -67,4 +118,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 SautiPesa Bridge live on port ${PORT}`);
     console.log(`🔗 Target URL: https://sautipesa-bridge.onrender.com/register`);
+    console.log(`🔗 Callback URL: https://sautipesa-bridge.onrender.com/callback`);
 });
