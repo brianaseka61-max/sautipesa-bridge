@@ -22,14 +22,15 @@ app.post('/callback', async (req, res) => {
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
             
+            // Map the data to the exact column names required by your Supabase table
             const payload = {
-                receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value,
+                receipt: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value, // Changed to match your 'receipt' column
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
-                transaction_date: new Date().toISOString() 
+                transaction_date: new Date().toISOString()
             };
 
-            console.log(`✅ Attempting Supabase Save: ${payload.receipt_number}`);
+            console.log(`✅ Attempting Supabase Save with Receipt: ${payload.receipt}`);
 
             const { error } = await supabase.from('transactions').insert([payload]);
 
@@ -46,7 +47,7 @@ app.post('/callback', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 10000;
+const PORT = 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Bridge listening on Port ${PORT}`);
 });
