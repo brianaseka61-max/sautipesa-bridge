@@ -15,9 +15,33 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Multi-Tenant Bridge is Live!");
 });
 
+// --- NEW UPDATE: Registration Endpoint to fix Onboarding 404 ---
+app.post('/register', async (req, res) => {
+    console.log("📝 REGISTRATION REQUEST:", JSON.stringify(req.body));
+    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+
+    try {
+        const { error } = await supabase.from('merchants').upsert([{
+            shortcode: String(shortcode).trim(),
+            business_name: business_name,
+            consumer_key: consumer_key,
+            consumer_secret: consumer_secret,
+            passkey: passkey,
+            status: 'Active'
+        }]);
+
+        if (error) throw error;
+
+        console.log(`✅ Business ${shortcode} Registered Successfully`);
+        res.status(200).json({ message: "Registration successful" });
+    } catch (err) {
+        console.error("❌ REGISTRATION ERROR:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/callback', async (req, res) => {
     // ⚡ SPEED UPDATE: Immediately acknowledge receipt to Safaricom
-    // This prevents delays and allows the background process to run independently
     res.status(200).send("Success");
 
     console.log("💰 CALLBACK RECEIVED:", JSON.stringify(req.body));
@@ -31,8 +55,9 @@ app.post('/callback', async (req, res) => {
             let originalReceipt = metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
             const testReceipt = originalReceipt + "_" + Math.floor(Math.random() * 10000);
             
-            // This pulls the Paybill/Till number from the metadata to identify the business
-            const businessShortcode = req.body.Body.stkCallback.MerchantRequestID.split('-')[0] || "UNKNOWN";
+            // IMPROVED: Extract and trim to ensure match with registered merchant
+            const rawID = req.body.Body.stkCallback.MerchantRequestID || "";
+            const businessShortcode = rawID.split('-')[0].trim() || "UNKNOWN";
 
             const payload = {
                 receipt_number: testReceipt, 
@@ -40,7 +65,7 @@ app.post('/callback', async (req, res) => {
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || ""),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
-                business_shortcode: businessShortcode, // THE KEY FOR PRIVACY
+                business_shortcode: businessShortcode, 
                 transaction_date: new Date().toISOString()
             };
 
@@ -50,7 +75,7 @@ app.post('/callback', async (req, res) => {
             if (!error) {
                 console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
             } else {
-                console.error("❌ SUPABASE SAVE ERROR:", error.message);
+                console.error(`❌ SUPABASE SAVE ERROR [${businessShortcode}]:`, error.message);
             }
         }
     } catch (err) {
