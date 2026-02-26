@@ -15,75 +15,65 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Multi-Tenant Bridge is Live!");
 });
 
-// --- NEW UPDATE: Registration Endpoint to fix Onboarding 404 ---
 app.post('/register', async (req, res) => {
-    console.log("📝 REGISTRATION REQUEST:", JSON.stringify(req.body));
     const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
-
     try {
         const { error } = await supabase.from('merchants').upsert([{
             shortcode: String(shortcode).trim(),
-            business_name: business_name,
-            consumer_key: consumer_key,
-            consumer_secret: consumer_secret,
-            passkey: passkey,
+            business_name, consumer_key, consumer_secret, passkey,
             status: 'Active'
         }]);
-
         if (error) throw error;
-
-        console.log(`✅ Business ${shortcode} Registered Successfully`);
         res.status(200).json({ message: "Registration successful" });
     } catch (err) {
-        console.error("❌ REGISTRATION ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
 app.post('/callback', async (req, res) => {
-    // ⚡ SPEED UPDATE: Immediately acknowledge receipt to Safaricom
-    res.status(200).send("Success");
-
-    console.log("💰 CALLBACK RECEIVED:", JSON.stringify(req.body));
-
+    res.status(200).send("Success"); // Fast ACK for Safaricom
+    
     try {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
-            
-            // Extract the Receipt and the Shortcode (Business ID)
-            let originalReceipt = metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
-            const testReceipt = originalReceipt + "_" + Math.floor(Math.random() * 10000);
-            
-            // IMPROVED: Extract and trim to ensure match with registered merchant
-            const rawID = req.body.Body.stkCallback.MerchantRequestID || "";
-            const businessShortcode = rawID.split('-')[0].trim() || "UNKNOWN";
+            const rawID = stkCallback.MerchantRequestID || "";
+            const businessShortcode = rawID.split('-')[0].trim();
+
+            // ⚡ AUTO-REPAIR LOGIC: Ensure Merchant exists before inserting transaction
+            const { data: merchant } = await supabase
+                .from('merchants')
+                .select('shortcode')
+                .eq('shortcode', businessShortcode)
+                .single();
+
+            if (!merchant) {
+                console.log(`⚠️ Merchant ${businessShortcode} not found. Auto-registering...`);
+                await supabase.from('merchants').insert([{ 
+                    shortcode: businessShortcode, 
+                    business_name: "Auto-Registered Merchant",
+                    status: 'Active' 
+                }]);
+            }
 
             const payload = {
-                receipt_number: testReceipt, 
+                receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value + "_" + Math.floor(Math.random() * 1000), 
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
-                sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || ""),
+                sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "M-Pesa User"),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
                 business_shortcode: businessShortcode, 
                 transaction_date: new Date().toISOString()
             };
 
-            // Process saving in background
-            const { error } = await supabase.from('transactions').insert([payload]);
-
-            if (!error) {
-                console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
-            } else {
-                console.error(`❌ SUPABASE SAVE ERROR [${businessShortcode}]:`, error.message);
-            }
+            const { error: insError } = await supabase.from('transactions').insert([payload]);
+            if (insError) console.error(`❌ DB REJECTED [${businessShortcode}]:`, insError.message);
+            else console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
         }
     } catch (err) {
-        console.error("❌ BACKGROUND PROCESSING ERROR:", err.message);
+        console.error("❌ PROCESSING ERROR:", err.message);
     }
 });
 
 const PORT = 10000; 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`📡 Bridge listening on Port ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => { console.log(`📡 Bridge listening on Port ${PORT}`); });
