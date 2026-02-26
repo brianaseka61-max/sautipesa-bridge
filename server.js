@@ -28,21 +28,25 @@ app.post('/callback', async (req, res) => {
             // ADDED: Random suffix so you never get a "Duplicate Key" error again during testing
             const testReceipt = originalReceipt + "_" + Math.floor(Math.random() * 10000);
 
+            // EXTRACT ACCOUNT: M-Pesa sends this as 'BillRefNumber'
+            const accountValue = metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A";
+
             const payload = {
-                receipt: testReceipt, // Matches your 'receipt' column
+                receipt_number: testReceipt, // Matches your Supabase column name
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
-                phone: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Matches your 'phone' column
+                phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Matches your Supabase column name
+                account: String(accountValue), // Picks up the Account Number
                 transaction_date: new Date().toISOString()
             };
 
-            console.log(`✅ Attempting Unique Save: Receipt=${payload.receipt}`);
+            console.log(`✅ Attempting Unique Save: Receipt=${payload.receipt_number}, Account=${payload.account}`);
 
             const { error } = await supabase.from('transactions').insert([payload]);
 
             if (error) {
                 console.error("❌ SUPABASE ERROR:", error.message);
             } else {
-                console.log(`🚀 SUCCESS: Saved ${payload.receipt} to Supabase!`);
+                console.log(`🚀 SUCCESS: Saved ${payload.receipt_number} to Supabase!`);
             }
         }
         res.status(200).send("Success");
