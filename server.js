@@ -16,6 +16,10 @@ app.get('/', (req, res) => {
 });
 
 app.post('/callback', async (req, res) => {
+    // ⚡ SPEED UPDATE: Immediately acknowledge receipt to Safaricom
+    // This prevents delays and allows the background process to run independently
+    res.status(200).send("Success");
+
     console.log("💰 CALLBACK RECEIVED:", JSON.stringify(req.body));
 
     try {
@@ -40,13 +44,17 @@ app.post('/callback', async (req, res) => {
                 transaction_date: new Date().toISOString()
             };
 
+            // Process saving in background
             const { error } = await supabase.from('transactions').insert([payload]);
 
-            if (!error) console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
+            if (!error) {
+                console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
+            } else {
+                console.error("❌ SUPABASE SAVE ERROR:", error.message);
+            }
         }
-        res.status(200).send("Success");
     } catch (err) {
-        res.status(200).send("Error Handled");
+        console.error("❌ BACKGROUND PROCESSING ERROR:", err.message);
     }
 });
 
