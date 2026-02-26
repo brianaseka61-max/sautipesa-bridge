@@ -31,22 +31,27 @@ app.post('/callback', async (req, res) => {
             // EXTRACT ACCOUNT: M-Pesa sends this as 'BillRefNumber'
             const accountValue = metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A";
 
+            // NEW: EXTRACT SENDER NAME (Prioritize 'sender_name' or 'ExternalReference' from testing tools)
+            const nameValue = metadata.find(i => i.Name === 'sender_name')?.Value || 
+                              metadata.find(i => i.Name === 'ExternalReference')?.Value || "";
+
             const payload = {
-                receipt_number: testReceipt, // Matches your Supabase column name
+                receipt_number: testReceipt, 
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
-                phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value), // Matches your Supabase column name
-                account: String(accountValue), // Picks up the Account Number
+                phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
+                sender_name: String(nameValue), // This ensures the name is sent to Supabase
+                account: String(accountValue), 
                 transaction_date: new Date().toISOString()
             };
 
-            console.log(`✅ Attempting Unique Save: Receipt=${payload.receipt_number}, Account=${payload.account}`);
+            console.log(`✅ Attempting Unique Save: Receipt=${payload.receipt_number}, Name=${payload.sender_name}, Account=${payload.account}`);
 
             const { error } = await supabase.from('transactions').insert([payload]);
 
             if (error) {
                 console.error("❌ SUPABASE ERROR:", error.message);
             } else {
-                console.log(`🚀 SUCCESS: Saved ${payload.receipt_number} to Supabase!`);
+                console.log(`🚀 SUCCESS: Saved ${payload.receipt_number} for ${payload.sender_name} to Supabase!`);
             }
         }
         res.status(200).send("Success");
