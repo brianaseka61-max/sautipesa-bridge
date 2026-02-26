@@ -1,5 +1,6 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const axios = require('axios'); // Added for Daraja API calls
 
 const app = express();
 app.use(express.json({ limit: '10mb' })); 
@@ -13,6 +14,51 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Bridge is Live!");
 });
+
+// --- NEW ONBOARDING ENDPOINT FOR DARAJA 3.0 ---
+app.post('/onboard-business', async (req, res) => {
+    console.log("🛠️ ONBOARDING REQUEST:", JSON.stringify(req.body));
+    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+
+    try {
+        // 1. Get Daraja Access Token
+        const auth = Buffer.from(`${consumer_key}:${consumer_secret}`).toString('base64');
+        const tokenResponse = await axios.get('https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials', {
+            headers: { Authorization: `Basic ${auth}` }
+        });
+        const token = tokenResponse.data.access_token;
+
+        // 2. Register Callback URLs (C2B)
+        await axios.post('https://sandbox.safaricom.co.ke/mpesa/c2b/v1/registerurl', {
+            ShortCode: shortcode,
+            ResponseType: "Completed",
+            ConfirmationURL: "https://sautipesa-bridge.onrender.com/callback",
+            ValidationURL: "https://sautipesa-bridge.onrender.com/callback"
+        }, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+
+        // 3. Save Merchant Details to Supabase
+        const { error } = await supabase.from('merchants').insert([{
+            business_name,
+            shortcode,
+            consumer_key,
+            consumer_secret,
+            passkey,
+            created_at: new Date().toISOString()
+        }]);
+
+        if (error) throw error;
+
+        console.log(`🚀 SUCCESS: Business ${business_name} linked to SautiPesa!`);
+        res.status(200).json({ status: "Success", message: "Daraja Linked & Merchant Saved" });
+
+    } catch (err) {
+        console.error("❌ ONBOARDING ERROR:", err.message);
+        res.status(500).json({ status: "Error", message: err.message });
+    }
+});
+// ----------------------------------------------
 
 app.post('/callback', async (req, res) => {
     console.log("💰 CALLBACK RECEIVED:", JSON.stringify(req.body));
