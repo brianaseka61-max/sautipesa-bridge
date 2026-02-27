@@ -38,22 +38,18 @@ app.post('/callback', async (req, res) => {
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
             const rawID = stkCallback.MerchantRequestID || "";
-            const businessShortcode = rawID.split('-')[0].trim();
+            const businessShortcode = String(rawID.split('-')[0]).trim();
 
-            // --- SELF-HEALING STEP: Ensure Merchant Exists ---
-            const { data: merchantCheck } = await supabase
-                .from('merchants')
-                .select('shortcode')
-                .eq('shortcode', businessShortcode)
-                .maybeSingle();
+            // ⚡ FORCE MERCHANT REGISTRATION (Prevents Foreign Key Errors)
+            // This 'upsert' ensures the merchant exists before we try to link a transaction to them.
+            const { error: merchError } = await supabase.from('merchants').upsert([{ 
+                shortcode: businessShortcode, 
+                business_name: "Verified Merchant",
+                status: 'Active' 
+            }], { onConflict: 'shortcode' });
 
-            if (!merchantCheck) {
-                console.log(`⚠️ Merchant ${businessShortcode} missing. Auto-registering...`);
-                await supabase.from('merchants').insert([{ 
-                    shortcode: businessShortcode, 
-                    business_name: "Fresh Onboarded Shop",
-                    status: 'Active' 
-                }]);
+            if (merchError) {
+                console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
             }
 
             const payload = {
