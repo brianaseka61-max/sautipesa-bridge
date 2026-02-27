@@ -31,7 +31,7 @@ app.post('/register', async (req, res) => {
 });
 
 app.post('/callback', async (req, res) => {
-    res.status(200).send("Success"); // Fast ACK for Safaricom
+    res.status(200).send("Success"); 
     
     try {
         const stkCallback = req.body?.Body?.stkCallback;
@@ -40,38 +40,42 @@ app.post('/callback', async (req, res) => {
             const rawID = stkCallback.MerchantRequestID || "";
             const businessShortcode = rawID.split('-')[0].trim();
 
-            // ⚡ AUTO-REPAIR LOGIC: Ensure Merchant exists before inserting transaction
-            const { data: merchant } = await supabase
+            // --- SELF-HEALING STEP: Ensure Merchant Exists ---
+            const { data: merchantCheck } = await supabase
                 .from('merchants')
                 .select('shortcode')
                 .eq('shortcode', businessShortcode)
-                .single();
+                .maybeSingle();
 
-            if (!merchant) {
-                console.log(`⚠️ Merchant ${businessShortcode} not found. Auto-registering...`);
+            if (!merchantCheck) {
+                console.log(`⚠️ Merchant ${businessShortcode} missing. Auto-registering...`);
                 await supabase.from('merchants').insert([{ 
                     shortcode: businessShortcode, 
-                    business_name: "Auto-Registered Merchant",
+                    business_name: "Fresh Onboarded Shop",
                     status: 'Active' 
                 }]);
             }
 
             const payload = {
-                receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value + "_" + Math.floor(Math.random() * 1000), 
+                receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value + "_" + Math.floor(Math.random() * 9999), 
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
-                sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "M-Pesa User"),
+                sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "M-Pesa Customer"),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
                 business_shortcode: businessShortcode, 
                 transaction_date: new Date().toISOString()
             };
 
             const { error: insError } = await supabase.from('transactions').insert([payload]);
-            if (insError) console.error(`❌ DB REJECTED [${businessShortcode}]:`, insError.message);
-            else console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
+            
+            if (insError) {
+                console.error(`❌ DB REJECTED [${businessShortcode}]:`, insError.message);
+            } else {
+                console.log(`🚀 SUCCESS: Saved for Business ${businessShortcode}`);
+            }
         }
     } catch (err) {
-        console.error("❌ PROCESSING ERROR:", err.message);
+        console.error("❌ BACKGROUND PROCESSING ERROR:", err.message);
     }
 });
 
