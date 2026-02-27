@@ -16,17 +16,21 @@ app.get('/', (req, res) => {
 });
 
 app.post('/register', async (req, res) => {
-    // UPDATED: Now destructuring all fields including potential status
     const { business_name, shortcode, consumer_key, consumer_secret, passkey, status } = req.body;
     try {
+        // FIXED: Added 'onConflict' and 'ignoreDuplicates: false' to ensure it updates instead of crashing
         const { error } = await supabase.from('merchants').upsert([{
             shortcode: String(shortcode).trim(),
             business_name, 
             consumer_key, 
             consumer_secret, 
             passkey,
-            status: status || 'Active' // Default to Active if not provided
-        }]);
+            status: status || 'Active'
+        }], { 
+            onConflict: 'shortcode', 
+            ignoreDuplicates: false 
+        });
+
         if (error) throw error;
         res.status(200).json({ message: "Registration successful" });
     } catch (err) {
@@ -45,8 +49,7 @@ app.post('/callback', async (req, res) => {
             const rawID = stkCallback.MerchantRequestID || "";
             const businessShortcode = String(rawID.split('-')[0]).trim();
 
-            // ⚡ FORCE MERCHANT REGISTRATION (Self-Healing logic)
-            // This ensures that even if onboarding failed, the DB won't crash on Foreign Key constraints
+            // FIXED: Self-healing logic ensures merchant exists before transaction insert
             const { data: merchant, error: merchError } = await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
@@ -57,7 +60,6 @@ app.post('/callback', async (req, res) => {
                 console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
             }
 
-            // NEW: Security Check - Only save transaction if business is Active
             if (merchant && merchant[0].status !== 'Active') {
                 console.log(`⚠️ BLOCKED: Business ${businessShortcode} is ${merchant[0].status}`);
                 return;
@@ -69,7 +71,7 @@ app.post('/callback', async (req, res) => {
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "M-Pesa Customer"),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
-                business_shortcode: businessShortcode, 
+                business_shortcode: businessShortcode,
                 transaction_date: new Date().toISOString()
             };
 
