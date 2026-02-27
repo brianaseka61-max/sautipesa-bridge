@@ -16,16 +16,21 @@ app.get('/', (req, res) => {
 });
 
 app.post('/register', async (req, res) => {
-    const { business_name, shortcode, consumer_key, consumer_secret, passkey } = req.body;
+    // UPDATED: Now destructuring all fields including potential status
+    const { business_name, shortcode, consumer_key, consumer_secret, passkey, status } = req.body;
     try {
         const { error } = await supabase.from('merchants').upsert([{
             shortcode: String(shortcode).trim(),
-            business_name, consumer_key, consumer_secret, passkey,
-            status: 'Active'
+            business_name, 
+            consumer_key, 
+            consumer_secret, 
+            passkey,
+            status: status || 'Active' // Default to Active if not provided
         }]);
         if (error) throw error;
         res.status(200).json({ message: "Registration successful" });
     } catch (err) {
+        console.error("❌ REGISTRATION ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -40,16 +45,22 @@ app.post('/callback', async (req, res) => {
             const rawID = stkCallback.MerchantRequestID || "";
             const businessShortcode = String(rawID.split('-')[0]).trim();
 
-            // ⚡ FORCE MERCHANT REGISTRATION (Prevents Foreign Key Errors)
-            // This 'upsert' ensures the merchant exists before we try to link a transaction to them.
-            const { error: merchError } = await supabase.from('merchants').upsert([{ 
+            // ⚡ FORCE MERCHANT REGISTRATION (Self-Healing logic)
+            // This ensures that even if onboarding failed, the DB won't crash on Foreign Key constraints
+            const { data: merchant, error: merchError } = await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
                 status: 'Active' 
-            }], { onConflict: 'shortcode' });
+            }], { onConflict: 'shortcode' }).select();
 
             if (merchError) {
                 console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
+            }
+
+            // NEW: Security Check - Only save transaction if business is Active
+            if (merchant && merchant[0].status !== 'Active') {
+                console.log(`⚠️ BLOCKED: Business ${businessShortcode} is ${merchant[0].status}`);
+                return;
             }
 
             const payload = {
