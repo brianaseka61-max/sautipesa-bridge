@@ -44,40 +44,23 @@ app.post('/callback', async (req, res) => {
 
             console.log(`📡 SYNCING MERCHANT: ${businessShortcode}`);
 
-            // 🛠️ STEP 1: FORCE UPSERT & WAIT
-            const { error: merchError } = await supabase.from('merchants').upsert([{ 
+            // 1. Force Upsert
+            await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
                 status: 'Active' 
             }], { onConflict: 'shortcode' });
 
-            if (merchError) {
-                console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
-                return;
-            }
-
-            // 🛠️ STEP 2: OPERATIONAL RETRY LOGIC (The "Double Check")
-            // This loop ensures the DB has indexed the merchant before we move to the transaction.
-            let verifiedMerchant = null;
+            // 2. WAIT & VERIFY (Operational Retry)
+            // This ensures the DB index is ready before the transaction insert
+            let merchantConfirmed = false;
             for (let i = 0; i < 3; i++) {
-                const { data } = await supabase
-                    .from('merchants')
-                    .select('status')
-                    .eq('shortcode', businessShortcode)
-                    .single();
-                
-                if (data) {
-                    verifiedMerchant = data;
-                    break;
-                }
-                // Wait 1 second before retrying
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                const { data } = await supabase.from('merchants').select('status').eq('shortcode', businessShortcode).single();
+                if (data) { merchantConfirmed = true; break; }
+                await new Promise(r => setTimeout(r, 1000));
             }
 
-            if (!verifiedMerchant) {
-                console.error("❌ DB SYNC DELAY: Merchant not found after 3 retries.");
-                return;
-            }
+            if (!merchantConfirmed) return console.error("❌ MERCHANT NOT READY IN DB");
 
             const payload = {
                 receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value + "_" + Math.floor(Math.random() * 9999), 
@@ -89,7 +72,6 @@ app.post('/callback', async (req, res) => {
                 transaction_date: new Date().toISOString()
             };
 
-            // 🛠️ STEP 3: FINAL INSERT
             const { error: insError } = await supabase.from('transactions').insert([payload]);
             
             if (insError) {
@@ -99,7 +81,7 @@ app.post('/callback', async (req, res) => {
             }
         }
     } catch (err) {
-        console.error("❌ CALLBACK PROCESSING ERROR:", err.message);
+        console.error("❌ CALLBACK ERROR:", err.message);
     }
 });
 
