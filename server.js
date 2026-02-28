@@ -19,7 +19,7 @@ app.post('/register', async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey, status } = req.body;
     try {
         const { error } = await supabase.from('merchants').upsert([{
-            shortcode: String(shortcode).trim(),
+            shortcode: String(shortcode).trim(), // Force String
             business_name, consumer_key, consumer_secret, passkey,
             status: status || 'Active'
         }], { onConflict: 'shortcode' });
@@ -40,38 +40,45 @@ app.post('/callback', async (req, res) => {
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
             const rawID = stkCallback.MerchantRequestID || "";
+            // CRITICAL: Ensure shortcode is treated as a clean string for the FK
             const businessShortcode = String(rawID.split('-')[0]).trim();
 
             console.log(`📡 SYNCING MERCHANT: ${businessShortcode}`);
 
-            // 1. Force Upsert
+            // 1. Force Upsert to ensure merchant exists in the DB
             await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
                 status: 'Active' 
             }], { onConflict: 'shortcode' });
 
-            // 2. WAIT & VERIFY (Operational Retry)
-            // This ensures the DB index is ready before the transaction insert
+            // 2. RETRY LOOP: Wait for DB indexing
             let merchantConfirmed = false;
             for (let i = 0; i < 3; i++) {
-                const { data } = await supabase.from('merchants').select('status').eq('shortcode', businessShortcode).single();
+                const { data } = await supabase.from('merchants')
+                    .select('status')
+                    .eq('shortcode', businessShortcode)
+                    .single();
                 if (data) { merchantConfirmed = true; break; }
                 await new Promise(r => setTimeout(r, 1000));
             }
 
-            if (!merchantConfirmed) return console.error("❌ MERCHANT NOT READY IN DB");
+            if (!merchantConfirmed) {
+                console.error(`❌ ERROR: Merchant ${businessShortcode} not found in DB.`);
+                return;
+            }
 
             const payload = {
-                receipt_number: metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value + "_" + Math.floor(Math.random() * 9999), 
+                receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value) + "_" + Math.floor(Math.random() * 9999), 
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "M-Pesa Customer"),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
-                business_shortcode: businessShortcode,
+                business_shortcode: businessShortcode, // Matches the UNIQUE constraint
                 transaction_date: new Date().toISOString()
             };
 
+            // 3. Final insert attempt
             const { error: insError } = await supabase.from('transactions').insert([payload]);
             
             if (insError) {
