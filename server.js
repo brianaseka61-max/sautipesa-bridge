@@ -56,16 +56,26 @@ app.post('/callback', async (req, res) => {
                 return;
             }
 
-            // 🛠️ STEP 2: VERIFY EXISTENCE (The "Double Check")
-            // This small pause ensures the DB has indexed the merchant.
-            const { data: verifiedMerchant } = await supabase
-                .from('merchants')
-                .select('status')
-                .eq('shortcode', businessShortcode)
-                .single();
+            // 🛠️ STEP 2: OPERATIONAL RETRY LOGIC (The "Double Check")
+            // This loop ensures the DB has indexed the merchant before we move to the transaction.
+            let verifiedMerchant = null;
+            for (let i = 0; i < 3; i++) {
+                const { data } = await supabase
+                    .from('merchants')
+                    .select('status')
+                    .eq('shortcode', businessShortcode)
+                    .single();
+                
+                if (data) {
+                    verifiedMerchant = data;
+                    break;
+                }
+                // Wait 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
 
             if (!verifiedMerchant) {
-                console.error("❌ DB SYNC DELAY: Merchant not found yet.");
+                console.error("❌ DB SYNC DELAY: Merchant not found after 3 retries.");
                 return;
             }
 
