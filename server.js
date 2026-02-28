@@ -18,18 +18,11 @@ app.get('/', (req, res) => {
 app.post('/register', async (req, res) => {
     const { business_name, shortcode, consumer_key, consumer_secret, passkey, status } = req.body;
     try {
-        // FIXED: Added 'onConflict' and 'ignoreDuplicates: false' to ensure it updates instead of crashing
         const { error } = await supabase.from('merchants').upsert([{
             shortcode: String(shortcode).trim(),
-            business_name, 
-            consumer_key, 
-            consumer_secret, 
-            passkey,
+            business_name, consumer_key, consumer_secret, passkey,
             status: status || 'Active'
-        }], { 
-            onConflict: 'shortcode', 
-            ignoreDuplicates: false 
-        });
+        }], { onConflict: 'shortcode' });
 
         if (error) throw error;
         res.status(200).json({ message: "Registration successful" });
@@ -49,24 +42,30 @@ app.post('/callback', async (req, res) => {
             const rawID = stkCallback.MerchantRequestID || "";
             const businessShortcode = String(rawID.split('-')[0]).trim();
 
-            console.log(`🔍 Processing callback for: ${businessShortcode}`);
+            console.log(`📡 SYNCING MERCHANT: ${businessShortcode}`);
 
-            // ⚡ ABSOLUTE FIX: Strictly await the merchant record creation
-            // This ensures the merchant exists in the DB before the transaction links to it.
-            const { data: merchant, error: merchError } = await supabase.from('merchants').upsert([{ 
+            // 🛠️ STEP 1: FORCE UPSERT & WAIT
+            const { error: merchError } = await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
                 status: 'Active' 
-            }], { onConflict: 'shortcode' }).select();
+            }], { onConflict: 'shortcode' });
 
             if (merchError) {
                 console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
-                return; // Exit if merchant cannot be synced
+                return;
             }
 
-            // Security Check: Only proceed if business is Active
-            if (merchant && merchant[0].status !== 'Active') {
-                console.log(`⚠️ BLOCKED: Business ${businessShortcode} is ${merchant[0].status}`);
+            // 🛠️ STEP 2: VERIFY EXISTENCE (The "Double Check")
+            // This small pause ensures the DB has indexed the merchant.
+            const { data: verifiedMerchant } = await supabase
+                .from('merchants')
+                .select('status')
+                .eq('shortcode', businessShortcode)
+                .single();
+
+            if (!verifiedMerchant) {
+                console.error("❌ DB SYNC DELAY: Merchant not found yet.");
                 return;
             }
 
@@ -80,7 +79,7 @@ app.post('/callback', async (req, res) => {
                 transaction_date: new Date().toISOString()
             };
 
-            // Now that the merchant is confirmed, insert the transaction
+            // 🛠️ STEP 3: FINAL INSERT
             const { error: insError } = await supabase.from('transactions').insert([payload]);
             
             if (insError) {
@@ -90,7 +89,7 @@ app.post('/callback', async (req, res) => {
             }
         }
     } catch (err) {
-        console.error("❌ BACKGROUND PROCESSING ERROR:", err.message);
+        console.error("❌ CALLBACK PROCESSING ERROR:", err.message);
     }
 });
 
