@@ -49,7 +49,10 @@ app.post('/callback', async (req, res) => {
             const rawID = stkCallback.MerchantRequestID || "";
             const businessShortcode = String(rawID.split('-')[0]).trim();
 
-            // FIXED: Self-healing logic ensures merchant exists before transaction insert
+            console.log(`🔍 Processing callback for: ${businessShortcode}`);
+
+            // ⚡ ABSOLUTE FIX: Strictly await the merchant record creation
+            // This ensures the merchant exists in the DB before the transaction links to it.
             const { data: merchant, error: merchError } = await supabase.from('merchants').upsert([{ 
                 shortcode: businessShortcode, 
                 business_name: "Verified Merchant",
@@ -58,8 +61,10 @@ app.post('/callback', async (req, res) => {
 
             if (merchError) {
                 console.error("❌ MERCHANT SYNC ERROR:", merchError.message);
+                return; // Exit if merchant cannot be synced
             }
 
+            // Security Check: Only proceed if business is Active
             if (merchant && merchant[0].status !== 'Active') {
                 console.log(`⚠️ BLOCKED: Business ${businessShortcode} is ${merchant[0].status}`);
                 return;
@@ -75,6 +80,7 @@ app.post('/callback', async (req, res) => {
                 transaction_date: new Date().toISOString()
             };
 
+            // Now that the merchant is confirmed, insert the transaction
             const { error: insError } = await supabase.from('transactions').insert([payload]);
             
             if (insError) {
