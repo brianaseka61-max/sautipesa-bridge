@@ -9,7 +9,14 @@ app.use(express.urlencoded({ extended: true }));
 const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI';
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// RLS UPDATE: We use the Service Role key here so the server can 'Administer' all merchants
+// while the SautiPesa App (using the Anon key) will be restricted by the RLS policies.
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
 
 app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Bridge is Live and Monitoring!");
