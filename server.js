@@ -32,59 +32,66 @@ app.post('/register', async (req, res) => {
     }
 });
 
+// --- UPDATED CALLBACK ROUTE ---
 app.post('/callback', async (req, res) => {
+    // 1. Acknowledge M-Pesa immediately to prevent retries
     res.status(200).send("Success"); 
     
     try {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
-            const rawID = String(stkCallback.MerchantRequestID || "");
             
-            // CLEAN EXTRACTION
+            // 2. EXTRACT & CLEAN SHORTCODE
+            // We force the MerchantRequestID (e.g. 884422-xxxx) to a clean String
+            const rawID = String(stkCallback.MerchantRequestID || "");
             const businessShortcode = rawID.includes('-') ? rawID.split('-')[0].trim() : rawID.trim();
 
             console.log(`🔍 VALIDATING MERCHANT: [${businessShortcode}]`);
 
-            // Check if merchant exists
+            // 3. FETCH MERCHANT FROM DB (THE SURE-FIRE CHECK)
             const { data: merchant, error: fetchError } = await supabase
                 .from('merchants')
                 .select('shortcode, business_name')
-                .eq('shortcode', String(businessShortcode))
+                .eq('shortcode', String(businessShortcode)) // Explicit string cast
                 .single();
 
             if (fetchError || !merchant) {
-                console.error(`❌ UNAUTHORIZED: Shortcode ${businessShortcode} not in DB.`);
+                console.error(`❌ UNAUTHORIZED: Shortcode ${businessShortcode} not found in DB.`);
                 return; 
             }
 
             console.log(`✅ MATCH FOUND: Processing for ${merchant.business_name}`);
 
+            // 4. PREPARE PAYLOAD
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 sender_name: String(metadata.find(i => i.Name === 'sender_name')?.Value || "Wycliffe Muka"),
                 account: String(metadata.find(i => i.Name === 'BillRefNumber')?.Value || "N/A"), 
-                business_shortcode: String(merchant.shortcode), 
+                business_shortcode: String(merchant.shortcode), // Links to the validated DB record
                 transaction_date: new Date().toISOString()
             };
 
-            // Delayed Insert to allow DB to breathe
+            // 5. FINAL INSERT WITH SAFETY BUFFER
+            // This 1-second delay ensures the DB link is ready to accept the foreign key
             setTimeout(async () => {
                 const { error: insError } = await supabase.from('transactions').insert([payload]);
                 
                 if (insError) {
                     console.error(`❌ DB REJECTED [${businessShortcode}]:`, insError.message);
+                    console.log("💡 Tip: Ensure your SQL Foreign Key clean-up was successful.");
                 } else {
                     console.log(`🚀 SUCCESS: Transaction saved for ${merchant.business_name}`);
                 }
             }, 1000);
         }
     } catch (err) {
-        console.error("❌ CALLBACK ERROR:", err.message);
+        console.error("❌ CALLBACK SYSTEM ERROR:", err.message);
     }
 });
+// --- END OF UPDATED CALLBACK ROUTE ---
 
 const PORT = 10000; 
 app.listen(PORT, '0.0.0.0', () => { console.log(`📡 Bridge listening on Port ${PORT}`); });
