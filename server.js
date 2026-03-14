@@ -39,6 +39,36 @@ app.post('/register', async (req, res) => {
     }
 });
 
+// --- NEW SYNC ROUTE FOR SALES HISTORY ---
+app.post('/sync', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const syncToken = "Bearer sauti_pro_secure_sync_2026";
+
+    if (!authHeader || authHeader !== syncToken) {
+        console.error("❌ SYNC ERROR: Unauthorized attempt");
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const salesList = req.body;
+
+    try {
+        console.log(`📡 SYNC START: Received ${salesList.length} sales records.`);
+
+        // Upsert handles inserts and prevents duplicates if sync is retried
+        const { error } = await supabase
+            .from('sales_history')
+            .upsert(salesList, { onConflict: 'id' });
+
+        if (error) throw error;
+
+        console.log("✅ SYNC SUCCESS: sales_history updated.");
+        res.status(200).send("Sync Complete");
+    } catch (err) {
+        console.error("❌ SYNC DB ERROR:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- UPDATED CALLBACK ROUTE ---
 app.post('/callback', async (req, res) => {
     // 1. Acknowledge M-Pesa immediately to prevent retries
