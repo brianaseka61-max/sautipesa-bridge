@@ -14,42 +14,49 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 app.get('/', (req, res) => {
-    res.status(200).send("🚀 SautiPesa Bridge is Live!");
+    res.status(200).send("🚀 SautiPesa Bridge is Live and Monitoring!");
 });
 
-// --- SYNC ROUTE ---
+// --- FORCE LOGGING SYNC ROUTE ---
 app.post('/sync', async (req, res) => {
+    // THIS WILL SHOW IN YOUR RENDER LOGS IMMEDIATELY
+    console.log("-----------------------------------------");
+    console.log("📡 ALERT: Received a Sync Request from the App!");
+    
     const authHeader = req.headers.authorization;
     const syncToken = "Bearer sauti_pro_secure_sync_2026";
 
     if (!authHeader || authHeader !== syncToken) {
+        console.log("❌ AUTH FAILURE: Token mismatch or missing.");
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const salesList = req.body;
+    console.log(`📦 Data Payload Size: ${Array.isArray(salesList) ? salesList.length : 'Not an array'}`);
+
     if (!Array.isArray(salesList) || salesList.length === 0) {
-        return res.status(400).json({ error: 'No data provided' });
+        return res.status(400).json({ error: 'Invalid data format' });
     }
 
     try {
-        // Sanitize incoming data to ensure it matches the database schema
         const sanitizedData = salesList.map(sale => ({
-            id: sale.id,
-            amount: sale.amount,
-            description: sale.description,
-            is_synced: 1 // Force set to 1 to confirm sync in DB
+            ...sale,
+            is_synced: 1 
         }));
 
         const { error } = await supabase
             .from('sales_history')
             .upsert(sanitizedData, { onConflict: 'id' });
 
-        if (error) throw error;
+        if (error) {
+            console.error("❌ SUPABASE ERROR:", error.message);
+            throw error;
+        }
 
-        console.log(`✅ Sync Success: ${salesList.length} items updated.`);
+        console.log("✅ SUCCESS: Data written to Supabase.");
         res.status(200).json({ status: "success", count: salesList.length });
     } catch (err) {
-        console.error("❌ SYNC ERROR:", err.message);
+        console.error("❌ SERVER ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -61,9 +68,6 @@ app.post('/callback', async (req, res) => {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
-            const rawID = String(stkCallback.MerchantRequestID || "");
-            const businessShortcode = rawID.split('-')[0].trim();
-
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
