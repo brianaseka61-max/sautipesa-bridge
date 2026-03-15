@@ -17,22 +17,7 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Bridge is Live!");
 });
 
-app.post('/register', async (req, res) => {
-    const { business_name, shortcode, consumer_key, consumer_secret, passkey, status } = req.body;
-    try {
-        const { error } = await supabase.from('merchants').upsert([{
-            shortcode: String(shortcode).trim(),
-            business_name, consumer_key, consumer_secret, passkey,
-            status: status || 'Active'
-        }], { onConflict: 'shortcode' });
-        if (error) throw error;
-        res.status(200).json({ message: "Registration successful" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// --- UPDATED SYNC ROUTE ---
+// --- SYNC ROUTE ---
 app.post('/sync', async (req, res) => {
     const authHeader = req.headers.authorization;
     const syncToken = "Bearer sauti_pro_secure_sync_2026";
@@ -42,16 +27,17 @@ app.post('/sync', async (req, res) => {
     }
 
     const salesList = req.body;
-
     if (!Array.isArray(salesList) || salesList.length === 0) {
         return res.status(400).json({ error: 'No data provided' });
     }
 
     try {
-        // Fix: Force is_synced to 1 for cloud storage
+        // Sanitize incoming data to ensure it matches the database schema
         const sanitizedData = salesList.map(sale => ({
-            ...sale,
-            is_synced: 1
+            id: sale.id,
+            amount: sale.amount,
+            description: sale.description,
+            is_synced: 1 // Force set to 1 to confirm sync in DB
         }));
 
         const { error } = await supabase
@@ -68,6 +54,7 @@ app.post('/sync', async (req, res) => {
     }
 });
 
+// --- CALLBACK ROUTE ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     try {
@@ -75,22 +62,12 @@ app.post('/callback', async (req, res) => {
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
             const rawID = String(stkCallback.MerchantRequestID || "");
-            const businessShortcode = rawID.includes('-') ? rawID.split('-')[0].trim() : rawID.trim();
-
-            const { data: merchant } = await supabase
-                .from('merchants')
-                .select('shortcode')
-                .eq('shortcode', String(businessShortcode))
-                .single();
-
-            if (!merchant) return;
+            const businessShortcode = rawID.split('-')[0].trim();
 
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
-                sender_name: "Customer",
-                business_shortcode: String(merchant.shortcode),
                 transaction_date: new Date().toISOString()
             };
             await supabase.from('transactions').insert([payload]);
