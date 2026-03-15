@@ -9,7 +9,6 @@ app.use(express.urlencoded({ extended: true }));
 const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI';
 
-// RLS UPDATE: We use the Service Role key here so the server can 'Administer' all merchants
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     autoRefreshToken: false,
@@ -38,7 +37,7 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// --- UPDATED SYNC ROUTE FOR SALES HISTORY ---
+// --- UPDATED SYNC ROUTE WITH DEBUGGING ---
 app.post('/sync', async (req, res) => {
     const authHeader = req.headers.authorization;
     const syncToken = "Bearer sauti_pro_secure_sync_2026";
@@ -49,25 +48,32 @@ app.post('/sync', async (req, res) => {
     }
 
     const salesList = req.body;
+    // Debug: Check what the app is actually sending
+    console.log("📥 RECEIVED SYNC PAYLOAD:", JSON.stringify(salesList, null, 2));
 
     if (!Array.isArray(salesList) || salesList.length === 0) {
-        return res.status(400).json({ error: 'Invalid data format: Expected an array of sales.' });
+        return res.status(400).json({ error: 'Invalid data format' });
     }
 
     try {
         console.log(`📡 SYNC START: Processing ${salesList.length} records.`);
 
-        // Upsert to Supabase
+        // Ensure is_synced is set to 1 before upserting if it's already reaching the server
+        const sanitizedData = salesList.map(item => ({
+            ...item,
+            is_synced: 1 
+        }));
+
         const { data, error } = await supabase
             .from('sales_history')
-            .upsert(salesList, { onConflict: 'id' });
+            .upsert(sanitizedData, { onConflict: 'id' });
 
         if (error) {
-            console.error("❌ SUPABASE SYNC ERROR DETAILS:", JSON.stringify(error, null, 2));
+            console.error("❌ SUPABASE SYNC ERROR:", error.message);
             throw error;
         }
 
-        console.log("✅ SYNC SUCCESS: sales_history updated.");
+        console.log("✅ SYNC SUCCESS: sales_history updated in Supabase.");
         res.status(200).json({ status: "success", count: salesList.length });
     } catch (err) {
         console.error("❌ SYNC DB ERROR:", err.message);
@@ -75,7 +81,7 @@ app.post('/sync', async (req, res) => {
     }
 });
 
-// --- UPDATED CALLBACK ROUTE ---
+// --- CALLBACK ROUTE ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     
@@ -83,24 +89,16 @@ app.post('/callback', async (req, res) => {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
-            
             const rawID = String(stkCallback.MerchantRequestID || "");
             const businessShortcode = rawID.includes('-') ? rawID.split('-')[0].trim() : rawID.trim();
 
-            console.log(`🔍 VALIDATING MERCHANT: [${businessShortcode}]`);
-
-            const { data: merchant, error: fetchError } = await supabase
+            const { data: merchant } = await supabase
                 .from('merchants')
                 .select('shortcode, business_name')
                 .eq('shortcode', String(businessShortcode))
                 .single();
 
-            if (fetchError || !merchant) {
-                console.error(`❌ UNAUTHORIZED: Shortcode ${businessShortcode} not found in DB.`);
-                return; 
-            }
-
-            console.log(`✅ MATCH FOUND: Processing for ${merchant.business_name}`);
+            if (!merchant) return; 
 
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
@@ -112,15 +110,7 @@ app.post('/callback', async (req, res) => {
                 transaction_date: new Date().toISOString()
             };
 
-            setTimeout(async () => {
-                const { error: insError } = await supabase.from('transactions').insert([payload]);
-                
-                if (insError) {
-                    console.error(`❌ DB REJECTED [${businessShortcode}]:`, insError.message);
-                } else {
-                    console.log(`🚀 SUCCESS: Transaction saved for ${merchant.business_name}`);
-                }
-            }, 1000);
+            await supabase.from('transactions').insert([payload]);
         }
     } catch (err) {
         console.error("❌ CALLBACK SYSTEM ERROR:", err.message);
