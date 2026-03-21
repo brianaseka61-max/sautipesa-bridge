@@ -17,9 +17,38 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Bridge is Live and Monitoring!");
 });
 
+// --- NEW: MERCHANT REGISTRATION ROUTE (Fixes Onboarding 404) ---
+app.post('/register', async (req, res) => {
+    console.log("-----------------------------------------");
+    console.log("🏢 ALERT: New Merchant Onboarding Request!");
+    
+    const merchantData = req.body;
+
+    if (!merchantData.shortcode) {
+        return res.status(400).json({ error: 'Missing business shortcode' });
+    }
+
+    try {
+        // Upsert merchant details into Supabase 'merchants' table
+        const { error } = await supabase
+            .from('merchants')
+            .upsert([merchantData], { onConflict: 'shortcode' });
+
+        if (error) {
+            console.error("❌ SUPABASE REGISTRATION ERROR:", error.message);
+            return res.status(500).json({ error: error.message });
+        }
+
+        console.log(`✅ SUCCESS: Merchant ${merchantData.business_name} registered.`);
+        res.status(200).json({ status: "success", message: "Merchant registered successfully" });
+    } catch (err) {
+        console.error("❌ SERVER ERROR:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- FORCE LOGGING SYNC ROUTE ---
 app.post('/sync', async (req, res) => {
-    // THIS WILL SHOW IN YOUR RENDER LOGS IMMEDIATELY
     console.log("-----------------------------------------");
     console.log("📡 ALERT: Received a Sync Request from the App!");
     
@@ -32,7 +61,6 @@ app.post('/sync', async (req, res) => {
     }
 
     const salesList = req.body;
-    console.log(`📦 Data Payload Size: ${Array.isArray(salesList) ? salesList.length : 'Not an array'}`);
 
     if (!Array.isArray(salesList) || salesList.length === 0) {
         return res.status(400).json({ error: 'Invalid data format' });
@@ -61,25 +89,32 @@ app.post('/sync', async (req, res) => {
     }
 });
 
-// --- CALLBACK ROUTE ---
+// --- CALLBACK ROUTE (Updated for Independent Merchants) ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     try {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
+            
+            // We need to know which business this belongs to. 
+            // Usually passed via the 'CheckoutRequestID' or 'AccountReference'
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
-                transaction_date: new Date().toISOString()
+                transaction_date: new Date().toISOString(),
+                // Ensure your Supabase table has 'business_shortcode' to filter per user
+                business_shortcode: req.query.shortcode || "174379" 
             };
+            
             await supabase.from('transactions').insert([payload]);
+            console.log("💰 Payment Recorded for Shortcode:", payload.business_shortcode);
         }
     } catch (err) {
         console.error("❌ Callback Error:", err.message);
     }
 });
 
-const PORT = 10000; 
+const PORT = process.env.PORT || 10000; 
 app.listen(PORT, '0.0.0.0', () => { console.log(`📡 Bridge listening on Port ${PORT}`); });
