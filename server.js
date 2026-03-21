@@ -3,7 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 const app = express();
-app.use(express.json({ limit: '10mb' })); 
+app.use(express.json({ limit: '20mb' })); // Increased limit for bulk inventory/sales sync
 app.use(express.urlencoded({ extended: true }));
 
 const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
@@ -14,102 +14,89 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 app.get('/', (req, res) => {
-    res.status(200).send("🚀 SautiPesa Bridge is Live and Monitoring!");
+    res.status(200).send("🚀 SautiPesa Universal Bridge is Live and Monitoring!");
 });
 
-// --- NEW: MERCHANT REGISTRATION ROUTE (Fixes Onboarding 404) ---
+// --- MERCHANT REGISTRATION ROUTE ---
 app.post('/register', async (req, res) => {
     console.log("-----------------------------------------");
     console.log("🏢 ALERT: New Merchant Onboarding Request!");
-    
     const merchantData = req.body;
-
     if (!merchantData.shortcode) {
         return res.status(400).json({ error: 'Missing business shortcode' });
     }
+    try {
+        const { error } = await supabase.from('merchants').upsert([merchantData], { onConflict: 'shortcode' });
+        if (error) throw error;
+        console.log(`✅ SUCCESS: Merchant ${merchantData.business_name} registered.`);
+        res.status(200).json({ status: "success" });
+    } catch (err) {
+        console.error("❌ REGISTRATION ERROR:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- NEW: UNIVERSAL DYNAMIC SYNC ROUTE ---
+// Handles Inventory, Debts, CRM, Expenses, and Appointments dynamically
+app.post('/sync-universal', async (req, res) => {
+    const tableName = req.query.table; 
+    const dataList = req.body;
+
+    console.log("-----------------------------------------");
+    console.log(`📡 UNIVERSAL SYNC: Received data for [${tableName}]`);
+
+    if (!tableName || !Array.isArray(dataList)) {
+        return res.status(400).json({ error: 'Missing table name or invalid data format' });
+    }
 
     try {
-        // Upsert merchant details into Supabase 'merchants' table
+        // We use upsert so that if an item exists, it updates; otherwise, it inserts
         const { error } = await supabase
-            .from('merchants')
-            .upsert([merchantData], { onConflict: 'shortcode' });
+            .from(tableName)
+            .upsert(dataList, { onConflict: 'id' });
 
         if (error) {
-            console.error("❌ SUPABASE REGISTRATION ERROR:", error.message);
+            console.error(`❌ SUPABASE SYNC ERROR [${tableName}]:`, error.message);
             return res.status(500).json({ error: error.message });
         }
 
-        console.log(`✅ SUCCESS: Merchant ${merchantData.business_name} registered.`);
-        res.status(200).json({ status: "success", message: "Merchant registered successfully" });
+        console.log(`✅ SUCCESS: Synced ${dataList.length} records to ${tableName}.`);
+        res.status(200).json({ status: "success", table: tableName, count: dataList.length });
     } catch (err) {
         console.error("❌ SERVER ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- FORCE LOGGING SYNC ROUTE ---
+// --- LEGACY SYNC ROUTE (For Backward Compatibility) ---
 app.post('/sync', async (req, res) => {
-    console.log("-----------------------------------------");
-    console.log("📡 ALERT: Received a Sync Request from the App!");
-    
-    const authHeader = req.headers.authorization;
-    const syncToken = "Bearer sauti_pro_secure_sync_2026";
-
-    if (!authHeader || authHeader !== syncToken) {
-        console.log("❌ AUTH FAILURE: Token mismatch or missing.");
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
-
+    console.log("📡 ALERT: Received a Legacy Sales Sync Request.");
     const salesList = req.body;
-
-    if (!Array.isArray(salesList) || salesList.length === 0) {
-        return res.status(400).json({ error: 'Invalid data format' });
-    }
-
     try {
-        const sanitizedData = salesList.map(sale => ({
-            ...sale,
-            is_synced: 1 
-        }));
-
-        const { error } = await supabase
-            .from('sales_history')
-            .upsert(sanitizedData, { onConflict: 'id' });
-
-        if (error) {
-            console.error("❌ SUPABASE ERROR:", error.message);
-            throw error;
-        }
-
-        console.log("✅ SUCCESS: Data written to Supabase.");
-        res.status(200).json({ status: "success", count: salesList.length });
+        const { error } = await supabase.from('sales_history').upsert(salesList, { onConflict: 'id' });
+        if (error) throw error;
+        res.status(200).json({ status: "success" });
     } catch (err) {
-        console.error("❌ SERVER ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- CALLBACK ROUTE (Updated for Independent Merchants) ---
+// --- MPESA CALLBACK ROUTE ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     try {
         const stkCallback = req.body?.Body?.stkCallback;
         if (stkCallback?.ResultCode === 0) {
             const metadata = stkCallback.CallbackMetadata.Item;
-            
-            // We need to know which business this belongs to. 
-            // Usually passed via the 'CheckoutRequestID' or 'AccountReference'
             const payload = {
                 receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 transaction_date: new Date().toISOString(),
-                // Ensure your Supabase table has 'business_shortcode' to filter per user
                 business_shortcode: req.query.shortcode || "174379" 
             };
-            
             await supabase.from('transactions').insert([payload]);
-            console.log("💰 Payment Recorded for Shortcode:", payload.business_shortcode);
+            console.log("💰 M-Pesa Payment Recorded for:", payload.business_shortcode);
         }
     } catch (err) {
         console.error("❌ Callback Error:", err.message);
@@ -117,4 +104,6 @@ app.post('/callback', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000; 
-app.listen(PORT, '0.0.0.0', () => { console.log(`📡 Bridge listening on Port ${PORT}`); });
+app.listen(PORT, '0.0.0.0', () => { 
+    console.log(`📡 SautiPesa Bridge listening on Port ${PORT}`); 
+});
