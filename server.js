@@ -14,6 +14,26 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false }
 });
 
+/**
+ * 🕒 DATE CORRECTION MIDDLEWARE
+ * This ensures any date coming from the Android app is cleaned for Supabase
+ */
+app.use((req, res, next) => {
+    if (req.body && Array.isArray(req.body)) {
+        req.body = req.body.map(item => {
+            if (item.created_at && item.created_at.includes('/')) {
+                // Convert dd/MM/yy HH:mm to ISO string
+                const [datePart, timePart] = item.created_at.split(' ');
+                const [d, m, y] = datePart.split('/');
+                const year = y.length === 2 ? `20${y}` : y;
+                item.created_at = `${year}-${m}-${d}T${timePart || '00:00'}:00Z`;
+            }
+            return item;
+        });
+    }
+    next();
+});
+
 app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Omni-Bridge: Monitoring All Business Activities!");
 });
@@ -72,15 +92,15 @@ app.post('/:targetTable', async (req, res) => {
                 supabaseTable = 'crm_leads';
                 break;
             default:
-                // If no mapping exists, attempt to use the targetTable name directly
                 supabaseTable = targetTable;
         }
 
-        // Perform the Upsert. This handles NEW entries and UPDATES existing ones (like stock).
+        // Perform the Upsert.
+        // If 'id' isn't provided by Android, we use created_at/merchant_shortcode to avoid duplicates
         const { error } = await supabase
             .from(supabaseTable)
             .upsert(data, { 
-                onConflict: 'id', // Uses the local ID to prevent duplicates in Supabase
+                onConflict: data[0].id ? 'id' : 'created_at,merchant_shortcode', 
                 ignoreDuplicates: false 
             });
 
