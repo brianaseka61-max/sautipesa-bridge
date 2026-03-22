@@ -3,7 +3,8 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 const app = express();
-app.use(express.json({ limit: '20mb' })); // Increased limit for bulk inventory/sales sync
+// Increased limit to 50mb to ensure large inventory/sales syncs never fail
+app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true }));
 
 const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
@@ -36,39 +37,54 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// --- NEW: UNIVERSAL DYNAMIC SYNC ROUTE ---
-// Handles Inventory, Debts, CRM, Expenses, and Appointments dynamically
+/**
+ * UNIVERSAL DYNAMIC SYNC ROUTE
+ * This block handles Sugar Sales (sales_history) and Inventory Updates (products)
+ * as well as Debts, CRM, Expenses, and Appointments.
+ */
 app.post('/sync-universal', async (req, res) => {
     const tableName = req.query.table; 
     const dataList = req.body;
+    const shortcode = req.query.shortcode || "UNKNOWN";
 
     console.log("-----------------------------------------");
-    console.log(`📡 UNIVERSAL SYNC: Received data for [${tableName}]`);
+    console.log(`📡 SYNC START: Table [${tableName}] | Merchant [${shortcode}]`);
 
     if (!tableName || !Array.isArray(dataList)) {
+        console.log("❌ SYNC REJECTED: Invalid data format or missing table name.");
         return res.status(400).json({ error: 'Missing table name or invalid data format' });
     }
 
     try {
-        // We use upsert so that if an item exists, it updates; otherwise, it inserts
+        // Attach the merchant shortcode to each record if it's missing
+        const sanitizedData = dataList.map(item => ({
+            ...item,
+            merchant_shortcode: item.merchant_shortcode || shortcode
+        }));
+
+        // Perform the Upsert. This handles both NEW sales and UPDATED product stock (Sugar)
         const { error } = await supabase
             .from(tableName)
-            .upsert(dataList, { onConflict: 'id' });
+            .upsert(sanitizedData, { onConflict: 'id' });
 
         if (error) {
-            console.error(`❌ SUPABASE SYNC ERROR [${tableName}]:`, error.message);
+            console.error(`❌ SUPABASE ERROR [${tableName}]:`, error.message);
             return res.status(500).json({ error: error.message });
         }
 
         console.log(`✅ SUCCESS: Synced ${dataList.length} records to ${tableName}.`);
-        res.status(200).json({ status: "success", table: tableName, count: dataList.length });
+        res.status(200).json({ 
+            status: "success", 
+            table: tableName, 
+            count: dataList.length 
+        });
     } catch (err) {
-        console.error("❌ SERVER ERROR:", err.message);
+        console.error("❌ SERVER CRITICAL ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- LEGACY SYNC ROUTE (For Backward Compatibility) ---
+// --- LEGACY SYNC ROUTE ---
 app.post('/sync', async (req, res) => {
     console.log("📡 ALERT: Received a Legacy Sales Sync Request.");
     const salesList = req.body;
@@ -93,10 +109,10 @@ app.post('/callback', async (req, res) => {
                 amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
                 phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
                 transaction_date: new Date().toISOString(),
-                business_shortcode: req.query.shortcode || "174379" 
+                merchant_shortcode: req.query.shortcode || "174379" 
             };
             await supabase.from('transactions').insert([payload]);
-            console.log("💰 M-Pesa Payment Recorded for:", payload.business_shortcode);
+            console.log("💰 M-Pesa Payment Recorded for:", payload.merchant_shortcode);
         }
     } catch (err) {
         console.error("❌ Callback Error:", err.message);
