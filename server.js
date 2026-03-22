@@ -3,7 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 const app = express();
-// High limit to ensure bulk syncs (like inventory) don't get cut off
+// High limit (50mb) to handle large bulk inventory or sync history
 app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true }));
 
@@ -15,41 +15,78 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 app.get('/', (req, res) => {
-    res.status(200).send("🚀 SautiPesa Omni-Bridge is Live!");
+    res.status(200).send("🚀 SautiPesa Omni-Bridge: Monitoring All Business Activities!");
 });
 
 /**
- * 🛠️ OMNI-ROUTING LOGIC
- * This block catches requests to /sales_history, /debts, /products, etc.
- * and routes them to the correct Supabase table.
+ * 🛠️ UNIVERSAL OMNI-ROUTING & MAPPING
+ * This single route catches everything from the app and sorts it into Supabase.
  */
 app.post('/:targetTable', async (req, res) => {
     const { targetTable } = req.params;
-    const data = req.body;
+    let data = req.body;
     
-    // Log the incoming traffic so you see it in Render Live Logs
+    // Ensure data is always an array for Supabase bulk upsert
+    if (!Array.isArray(data)) {
+        data = [data];
+    }
+
     console.log("-----------------------------------------");
-    console.log(`📡 OMNI-SYNC: Incoming [${targetTable}]`);
-    console.log(`📦 Records: ${Array.isArray(data) ? data.length : 1}`);
+    console.log(`📡 OMNI-SYNC START: [${targetTable}]`);
+    console.log(`📦 Processing ${data.length} records...`);
 
     try {
-        // Map common app routes to specific Supabase tables if names differ
+        /**
+         * 🗺️ MASTER TABLE MAPPING
+         * Maps Android Activity routes to your specific Supabase Schema names.
+         */
         let supabaseTable = targetTable;
-        if (targetTable === 'mpesa_transactions') supabaseTable = 'mpesa_sales';
 
+        switch (targetTable) {
+            case 'mpesa_transactions': 
+                supabaseTable = 'mpesa_sales'; 
+                break;
+            case 'sales_history': 
+                supabaseTable = 'sales_history'; // Cash Sales
+                break;
+            case 'products': 
+                supabaseTable = 'products'; // Inventory items & stock levels
+                break;
+            case 'debts': 
+                supabaseTable = 'debts'; // Debt additions & status
+                break;
+            case 'debt_history': 
+                supabaseTable = 'debt_payments'; // Payments against debts
+                break;
+            case 'expenses': 
+                supabaseTable = 'expenses'; 
+                break;
+            case 'appointments': 
+                supabaseTable = 'appointments'; // CRM & Scheduling
+                break;
+            default:
+                // If no mapping exists, attempt to use the targetTable name directly
+                supabaseTable = targetTable;
+        }
+
+        // Perform the Upsert. This handles NEW entries and UPDATES existing ones (like stock).
         const { error } = await supabase
             .from(supabaseTable)
-            .upsert(data, { onConflict: 'id' });
+            .upsert(data, { 
+                onConflict: 'id', // Uses the local ID to prevent duplicates in Supabase
+                ignoreDuplicates: false 
+            });
 
         if (error) {
             console.error(`❌ SUPABASE ERROR [${supabaseTable}]:`, error.message);
             return res.status(500).json({ error: error.message });
         }
 
-        console.log(`✅ SUCCESS: Synced to ${supabaseTable}`);
-        res.status(200).json({ status: "success", table: supabaseTable });
+        console.log(`✅ SUCCESS: Synced ${data.length} records to ${supabaseTable}.`);
+        res.status(200).json({ status: "success", table: supabaseTable, count: data.length });
+
     } catch (err) {
-        console.error("❌ CRITICAL BRIDGE ERROR:", err.message);
+        console.error("❌ BRIDGE CRITICAL ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -63,11 +100,12 @@ app.post('/register', async (req, res) => {
         console.log(`🏢 Merchant Registered: ${merchantData.business_name}`);
         res.status(200).json({ status: "success" });
     } catch (err) {
+        console.error("❌ REGISTRATION ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- MPESA CALLBACK ---
+// --- MPESA CALLBACK (STK PUSH) ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     try {
@@ -82,10 +120,10 @@ app.post('/callback', async (req, res) => {
                 merchant_shortcode: req.query.shortcode || "174379" 
             };
             await supabase.from('transactions').insert([payload]);
-            console.log("💰 M-Pesa Payment Logged.");
+            console.log("💰 M-Pesa Payment Logged Successfully.");
         }
     } catch (err) {
-        console.error("❌ Callback Error:", err.message);
+        console.error("❌ CALLBACK ERROR:", err.message);
     }
 });
 
