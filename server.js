@@ -68,6 +68,9 @@ app.post('/:targetTable', async (req, res) => {
             case 'customers': // ADDED: Map customer profiles
                 supabaseTable = 'customers';
                 break;
+            case 'crm_leads': // NEW: Route CRM & Leads data to the correct table
+                supabaseTable = 'crm_leads';
+                break;
             default:
                 // If no mapping exists, attempt to use the targetTable name directly
                 supabaseTable = targetTable;
