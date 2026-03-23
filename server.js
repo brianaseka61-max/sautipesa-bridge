@@ -18,32 +18,34 @@ app.post('/:table', async (req, res) => {
     const cleanRows = rows.map(row => {
         const r = { ...row };
         
-        // Fix the Date Error: Always provide a valid ISO string if missing
-        if (r.timestamp && r.timestamp.length > 5) {
-            r.created_at = r.timestamp;
+        // CRITICAL FIX: Ensure created_at is NEVER null
+        const rawDate = r.created_at || r.timestamp;
+        if (rawDate && rawDate.length > 5 && rawDate !== "null") {
+            r.created_at = rawDate;
         } else {
-            r.created_at = new Date().toISOString();
+            r.created_at = new Date().toISOString(); // Fallback to now
         }
-        
-        // Final Safety: Remove fields that don't belong in SQL
+
+        // Clean up metadata
         delete r.timestamp; delete r._id; delete r.id; delete r.is_synced;
 
-        // Force convert numbers
-        const nums = ['amount', 'balance', 'total_amount', 'stock_level', 'selling_price', 'buying_price'];
-        nums.forEach(f => { if (r[f] !== undefined) r[f] = parseFloat(r[f]) || 0; });
+        // Force convert numbers to avoid SQL type errors
+        ['amount', 'balance', 'total_amount', 'stock_level', 'selling_price', 'buying_price'].forEach(f => {
+            if (r[f] !== undefined) r[f] = parseFloat(r[f]) || 0;
+        });
 
         return r;
     });
 
     try {
-        // Use .insert() instead of .upsert() to avoid "Conflict" and "Constraint" errors
+        // Use standard Insert to get data in safely
         const { error } = await supabase.from(target).insert(cleanRows);
 
         if (error) {
-            console.error(`❌ DB REJECTED [${target}]:`, error.message);
+            console.error(`❌ REJECTED [${target}]:`, error.message);
             return res.status(400).send(error.message);
         }
-        console.log(`✅ DATA SAVED: ${target}`);
+        console.log(`✅ SUCCESS: Saved to ${target}`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
