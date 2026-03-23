@@ -4,54 +4,64 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI';
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(
+    'https://lzxhbtrpsrnsistngonk.supabase.co',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
+);
 
-const processRow = (table, data) => {
+const forceClean = (table, data) => {
     return data.map(item => {
-        const row = { ...item };
-        // Date Fix
-        row.created_at = row.created_at || row.timestamp || new Date().toISOString();
-        delete row.timestamp;
+        const clean = { ...item };
 
-        // Smart Mapping
-        if (table === 'products' && row.item_name) row.product_name = row.item_name;
-        if (table === 'debts') {
-            if (row.customer_phone) row.phone_number = row.customer_phone;
-            if (row.item_details) row.details = row.item_details;
+        // 🛠️ DATE FIX: The app sends 'timestamp', DB wants 'created_at'
+        const dateVal = clean.created_at || clean.timestamp;
+        if (dateVal && dateVal !== "" && dateVal !== "null") {
+            clean.created_at = dateVal;
+        } else {
+            delete clean.created_at; // Let SQL default to NOW()
         }
-        if (table === 'appointments' && row.appointment_date) row.date = row.appointment_date;
+        delete clean.timestamp;
 
-        // Clean Numbers (Force 0 if empty)
+        // 🛠️ COLUMN MAPPING
+        if (table === 'products' && clean.item_name) clean.product_name = clean.item_name;
+        if (table === 'debts') {
+            if (clean.customer_phone) clean.phone_number = clean.customer_phone;
+            if (clean.item_details) clean.details = clean.item_details;
+        }
+        if (table === 'appointments' && clean.appointment_date) clean.date = clean.appointment_date;
+
+        // 🛠️ NUMERIC ENFORCEMENT
         const nums = ['amount', 'balance', 'total_amount', 'price', 'quantity', 'stock_level', 'buying_price', 'selling_price'];
-        nums.forEach(n => { if (row.hasOwnProperty(n)) row[n] = parseFloat(row[n]) || 0; });
+        nums.forEach(n => {
+            if (clean.hasOwnProperty(n)) {
+                clean[n] = parseFloat(clean[n]) || 0;
+            }
+        });
 
-        // Remove ID fields coming from Android to let Supabase generate them
-        delete row._id; delete row.id; delete row.is_synced;
-
-        return row;
+        // Remove ID artifacts
+        delete clean._id; delete clean.id; delete clean.is_synced;
+        return clean;
     });
 };
 
-app.post('/:target', async (req, res) => {
-    let targetTable = req.params.target;
-    // Redirect App names to SQL names
-    if (targetTable === 'mpesa_transactions') targetTable = 'mpesa_sales';
+app.post('/:table', async (req, res) => {
+    let target = req.params.table;
+    if (target === 'mpesa_transactions') target = 'mpesa_sales';
     
-    let payload = Array.isArray(req.body) ? req.body : [req.body];
+    let body = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        const cleanData = processRow(targetTable, payload);
-        const key = (targetTable === 'products') ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
+        const data = forceClean(target, body);
+        const key = (target === 'products') ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
 
-        const { error } = await supabase.from(targetTable).upsert(cleanData, { onConflict: key });
+        const { error } = await supabase.from(target).upsert(data, { onConflict: key });
 
         if (error) {
-            console.error(`❌ REJECTED [${targetTable}]:`, error.message);
+            console.error(`❌ DB REJECTED [${target}]:`, error.message);
             return res.status(400).send(error.message);
         }
-        res.status(200).json({ status: "ok" });
+        console.log(`✅ SYNCED: ${target}`);
+        res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
     }
