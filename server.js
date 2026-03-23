@@ -2,6 +2,7 @@ const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
+// Increased limit to 50mb to ensure large sync batches from dukas don't fail
 app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true }));
 
@@ -11,67 +12,76 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
- * 🛡️ THE PERMANENT STABILITY FIX
- * This function cleans every record to ensure it matches Supabase's strict SQL types.
+ * 🛡️ PERMANENT STABILITY MIDDLEWARE
+ * This cleans data before it hits Supabase to prevent "Numeric Syntax" and "Date" errors.
  */
-const cleanRecordForPostgres = (item) => {
-    const cleaned = { ...item };
+const cleanDataForPostgres = (data) => {
+    return data.map(item => {
+        const cleaned = { ...item };
 
-    // 1. Fix Date: Standardize 'timestamp' or 'created_at' to ISO format
-    let rawDate = cleaned.timestamp || cleaned.created_at || new Date().toISOString();
-    if (rawDate.includes('/')) {
-        try {
-            const [datePart, timePart] = rawDate.split(' ');
-            const [d, m, y] = datePart.split('/');
-            const year = y.length === 2 ? `20${y}` : y;
-            cleaned.created_at = `${year}-${m}-${d}T${timePart || '00:00'}:00Z`;
-        } catch (e) {
-            cleaned.created_at = new Date().toISOString();
-        }
-    } else {
-        cleaned.created_at = rawDate;
-    }
-    // Remove 'timestamp' to avoid "column does not exist" errors in Supabase
-    delete cleaned.timestamp;
-
-    // 2. Fix Numeric Syntax: The "Sure Fix" for the Red Errors in your logs
-    // This list covers all your business tables (Sales, Products, Debts, Expenses)
-    const numericColumns = [
-        'total_amount', 'amount', 'price', 'buying_price', 
-        'selling_price', 'stock_level', 'quantity', 'balance', 'amount_paid'
-    ];
-
-    numericColumns.forEach(col => {
-        if (cleaned.hasOwnProperty(col)) {
-            // If the value is an empty string "", "null", or undefined, set it to 0
-            if (cleaned[col] === "" || cleaned[col] === null || cleaned[col] === undefined || cleaned[col] === "null") {
-                cleaned[col] = 0;
-            } else {
-                // Ensure it's a real number, not a string representation of a number
-                const parsed = parseFloat(cleaned[col]);
-                cleaned[col] = isNaN(parsed) ? 0 : parsed;
+        // 1. DATE STABILITY: Convert 'timestamp' or 'dd/MM/yy' to ISO
+        let rawDate = cleaned.timestamp || cleaned.created_at || new Date().toISOString();
+        if (typeof rawDate === 'string' && rawDate.includes('/')) {
+            try {
+                const [datePart, timePart] = rawDate.split(' ');
+                const [d, m, y] = datePart.split('/');
+                const year = y.length === 2 ? `20${y}` : y;
+                cleaned.created_at = `${year}-${m}-${d}T${timePart || '00:00'}:00Z`;
+            } catch (e) {
+                cleaned.created_at = new Date().toISOString();
             }
+        } else {
+            cleaned.created_at = rawDate;
         }
-    });
+        // Remove 'timestamp' to match Supabase schema perfectly
+        delete cleaned.timestamp;
 
-    return cleaned;
+        // 2. NUMERIC STABILITY: Fix the "invalid input syntax for type numeric: """ error
+        // PostgreSQL cannot accept "" for numbers. This converts blanks to 0.
+        const numericFields = [
+            'total_amount', 'amount', 'price', 'buying_price', 
+            'selling_price', 'stock_level', 'quantity', 'balance', 'amount_paid'
+        ];
+
+        numericFields.forEach(field => {
+            if (cleaned.hasOwnProperty(field)) {
+                if (cleaned[field] === "" || cleaned[field] === null || cleaned[col] === "null") {
+                    cleaned[field] = 0;
+                } else {
+                    cleaned[field] = parseFloat(cleaned[field]) || 0;
+                }
+            }
+        });
+
+        return cleaned;
+    });
 };
 
 app.get('/', (req, res) => {
-    res.status(200).send("🚀 SautiPesa Bridge: Data Cleaning Active & Stable");
+    res.status(200).send("🚀 SautiPesa Omni-Bridge: Stable, Permanent & Online");
 });
 
+/**
+ * 🛠️ UNIVERSAL OMNI-ROUTING
+ */
 app.post('/:targetTable', async (req, res) => {
     const { targetTable } = req.params;
     let data = req.body;
-    if (!Array.isArray(data)) data = [data];
+    
+    if (!Array.isArray(data)) {
+        data = [data];
+    }
 
-    console.log(`📡 Processing Sync: ${targetTable} (${data.length} records)`);
+    console.log(`📡 OMNI-SYNC: Table [${targetTable}] | Batch Size: ${data.length}`);
 
     try {
-        const cleanedData = data.map(record => cleanRecordForPostgres(record));
+        const cleanedData = cleanDataForPostgres(data);
 
-        // Use 'created_at' and 'merchant_shortcode' for conflict resolution
+        /**
+         * 🚀 THE SURE FIX:
+         * Uses the unique constraint (merchant_shortcode + created_at) to prevent duplicates.
+         * ignoreDuplicates: true ensures that even if a record exists, the server returns 200 OK.
+         */
         const { error } = await supabase
             .from(targetTable)
             .upsert(cleanedData, { 
@@ -80,28 +90,56 @@ app.post('/:targetTable', async (req, res) => {
             });
 
         if (error) {
-            console.error(`❌ SQL REJECTION [${targetTable}]:`, error.message);
+            console.error(`❌ SQL REJECTED [${targetTable}]:`, error.message);
             return res.status(400).json({ error: error.message });
         }
 
-        console.log(`✅ SUCCESS: Synced ${targetTable}`);
-        res.status(200).json({ status: "success" });
+        console.log(`✅ SUCCESS: Synced ${cleanedData.length} records to ${targetTable}.`);
+        res.status(200).json({ status: "success", count: cleanedData.length });
 
     } catch (err) {
-        console.error("❌ CRITICAL BRIDGE ERROR:", err.message);
+        console.error("❌ BRIDGE CRITICAL ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
+// Merchant Registration with Ward/Location support
 app.post('/register', async (req, res) => {
+    const merchantData = req.body;
     try {
-        const { error } = await supabase.from('merchants').upsert([req.body], { onConflict: 'shortcode' });
+        const { error } = await supabase.from('merchants').upsert([merchantData], { onConflict: 'shortcode' });
         if (error) throw error;
+        console.log(`🏢 Merchant Registered: ${merchantData.business_name}`);
         res.status(200).json({ status: "success" });
     } catch (err) {
+        console.error("❌ REGISTRATION ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`📡 Bridge Live on Port ${PORT}`));
+// MPESA CALLBACK (STK PUSH)
+app.post('/callback', async (req, res) => {
+    res.status(200).send("Success"); 
+    try {
+        const stkCallback = req.body?.Body?.stkCallback;
+        if (stkCallback?.ResultCode === 0) {
+            const metadata = stkCallback.CallbackMetadata.Item;
+            const payload = {
+                receipt_number: String(metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value),
+                amount: parseFloat(metadata.find(i => i.Name === 'Amount')?.Value),
+                phone_number: String(metadata.find(i => i.Name === 'PhoneNumber')?.Value),
+                transaction_date: new Date().toISOString(),
+                merchant_shortcode: req.query.shortcode || "174379" 
+            };
+            await supabase.from('mpesa_sales').insert([payload]);
+            console.log("💰 M-Pesa Payment Logged Successfully.");
+        }
+    } catch (err) {
+        console.error("❌ CALLBACK ERROR:", err.message);
+    }
+});
+
+const PORT = process.env.PORT || 10000; 
+app.listen(PORT, '0.0.0.0', () => { 
+    console.log(`📡 SautiPesa Omni-Bridge listening on Port ${PORT}`); 
+});
