@@ -3,7 +3,6 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 const app = express();
-// High limit (50mb) to handle large bulk inventory or sync history
 app.use(express.json({ limit: '50mb' })); 
 app.use(express.urlencoded({ extended: true }));
 
@@ -15,19 +14,33 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 /**
- * 🕒 DATE CORRECTION MIDDLEWARE
- * This ensures any date coming from the Android app is cleaned for Supabase
+ * 🛠️ DATA CLEANING & DATE CORRECTION MIDDLEWARE
+ * Fixes "invalid input syntax for type numeric" and "null created_at"
  */
 app.use((req, res, next) => {
     if (req.body && Array.isArray(req.body)) {
         req.body = req.body.map(item => {
-            if (item.created_at && item.created_at.includes('/')) {
-                // Convert dd/MM/yy HH:mm to ISO string
+            // 1. Fix Date: Ensure created_at is never null and is ISO format
+            if (!item.created_at || item.created_at === "") {
+                item.created_at = new Date().toISOString();
+            } else if (item.created_at.includes('/')) {
                 const [datePart, timePart] = item.created_at.split(' ');
                 const [d, m, y] = datePart.split('/');
                 const year = y.length === 2 ? `20${y}` : y;
                 item.created_at = `${year}-${m}-${d}T${timePart || '00:00'}:00Z`;
             }
+
+            // 2. Fix Numeric Syntax: Ensure amount fields are actual numbers, not strings
+            const numericFields = ['amount', 'total_amount', 'price', 'quantity', 'balance'];
+            numericFields.forEach(field => {
+                if (item[field] !== undefined) {
+                    item[field] = parseFloat(item[field]) || 0;
+                }
+            });
+
+            // 3. Table Column Mapping: Align Android names with Supabase names
+            if (item.total_amount && !item.amount) item.amount = item.total_amount;
+            
             return item;
         });
     }
@@ -38,65 +51,31 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 SautiPesa Omni-Bridge: Monitoring All Business Activities!");
 });
 
-/**
- * 🛠️ UNIVERSAL OMNI-ROUTING & MAPPING
- * This single route catches everything from the app and sorts it into Supabase.
- */
 app.post('/:targetTable', async (req, res) => {
     const { targetTable } = req.params;
     let data = req.body;
     
-    // Ensure data is always an array for Supabase bulk upsert
     if (!Array.isArray(data)) {
         data = [data];
     }
 
-    console.log("-----------------------------------------");
-    console.log(`📡 OMNI-SYNC START: [${targetTable}]`);
-    console.log(`📦 Processing ${data.length} records...`);
+    console.log(`📡 OMNI-SYNC: [${targetTable}] | Records: ${data.length}`);
 
     try {
-        /**
-         * 🗺️ MASTER TABLE MAPPING
-         * Maps Android Activity routes to your specific Supabase Schema names.
-         */
         let supabaseTable = targetTable;
 
         switch (targetTable) {
-            case 'mpesa_transactions': 
-                supabaseTable = 'mpesa_sales'; 
-                break;
-            case 'sales_history': 
-                supabaseTable = 'sales_history'; // Cash Sales
-                break;
-            case 'products': 
-                supabaseTable = 'products'; // Inventory items & stock levels
-                break;
-            case 'debts': 
-                supabaseTable = 'debts'; // Debt additions & status
-                break;
-            case 'debt_history': 
-                supabaseTable = 'debt_payments'; // Payments against debts
-                break;
-            case 'expenses': 
-                supabaseTable = 'expenses'; 
-                break;
-            case 'appointments': 
-            case 'crm_appointments': // ADDED: Map CRM data to appointments table
-                supabaseTable = 'appointments'; 
-                break;
-            case 'customers': // ADDED: Map customer profiles
-                supabaseTable = 'customers';
-                break;
-            case 'crm_leads': // NEW: Route CRM & Leads data to the correct table
-                supabaseTable = 'crm_leads';
-                break;
-            default:
-                supabaseTable = targetTable;
+            case 'mpesa_transactions': supabaseTable = 'mpesa_sales'; break;
+            case 'sales_history': supabaseTable = 'sales_history'; break;
+            case 'products': supabaseTable = 'products'; break;
+            case 'debts': supabaseTable = 'debts'; break;
+            case 'debt_history': supabaseTable = 'debt_payments'; break;
+            case 'expenses': supabaseTable = 'expenses'; break;
+            case 'appointments': supabaseTable = 'appointments'; break;
+            case 'crm_leads': supabaseTable = 'crm_leads'; break;
+            default: supabaseTable = targetTable;
         }
 
-        // Perform the Upsert.
-        // If 'id' isn't provided by Android, we use created_at/merchant_shortcode to avoid duplicates
         const { error } = await supabase
             .from(supabaseTable)
             .upsert(data, { 
@@ -109,22 +88,20 @@ app.post('/:targetTable', async (req, res) => {
             return res.status(500).json({ error: error.message });
         }
 
-        console.log(`✅ SUCCESS: Synced ${data.length} records to ${supabaseTable}.`);
-        res.status(200).json({ status: "success", table: supabaseTable, count: data.length });
+        console.log(`✅ SUCCESS: Synced ${data.length} to ${supabaseTable}.`);
+        res.status(200).json({ status: "success", count: data.length });
 
     } catch (err) {
-        console.error("❌ BRIDGE CRITICAL ERROR:", err.message);
+        console.error("❌ BRIDGE ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- MERCHANT REGISTRATION ---
 app.post('/register', async (req, res) => {
     const merchantData = req.body;
     try {
         const { error } = await supabase.from('merchants').upsert([merchantData], { onConflict: 'shortcode' });
         if (error) throw error;
-        console.log(`🏢 Merchant Registered: ${merchantData.business_name}`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         console.error("❌ REGISTRATION ERROR:", err.message);
@@ -132,7 +109,6 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// --- MPESA CALLBACK (STK PUSH) ---
 app.post('/callback', async (req, res) => {
     res.status(200).send("Success"); 
     try {
@@ -147,11 +123,8 @@ app.post('/callback', async (req, res) => {
                 merchant_shortcode: req.query.shortcode || "174379" 
             };
             await supabase.from('transactions').insert([payload]);
-            console.log("💰 M-Pesa Payment Logged Successfully.");
         }
-    } catch (err) {
-        console.error("❌ CALLBACK ERROR:", err.message);
-    }
+    } catch (err) {}
 });
 
 const PORT = process.env.PORT || 10000; 
