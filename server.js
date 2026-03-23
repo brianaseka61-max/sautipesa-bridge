@@ -9,47 +9,74 @@ const supabase = createClient(
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
 );
 
-app.post('/:table', async (req, res) => {
-    let target = req.params.table;
-    if (target === 'mpesa_transactions') target = 'mpesa_sales';
-    
-    let rows = Array.isArray(req.body) ? req.body : [req.body];
+// THE TRANSLATOR FUNCTION
+const mapToSupabase = (tableName, data) => {
+    return data.map(item => {
+        const clean = { ...item };
 
-    const cleanRows = rows.map(row => {
-        const r = { ...row };
-        
-        // CRITICAL FIX: Ensure created_at is NEVER null
-        const rawDate = r.created_at || r.timestamp;
-        if (rawDate && rawDate.length > 5 && rawDate !== "null") {
-            r.created_at = rawDate;
+        // 1. DATE HANDSHAKE (Solves the 'null created_at' error)
+        const dateSource = clean.created_at || clean.timestamp || clean.appointment_date;
+        if (dateSource && dateSource.length > 5) {
+            clean.created_at = dateSource;
         } else {
-            r.created_at = new Date().toISOString(); // Fallback to now
+            clean.created_at = new Date().toISOString(); 
         }
 
-        // Clean up metadata
-        delete r.timestamp; delete r._id; delete r.id; delete r.is_synced;
+        // 2. FIELD MAPPING (Ensures App fields match SQL columns)
+        if (tableName === 'debts') {
+            if (clean.phone_number) clean.customer_phone = clean.phone_number;
+            if (clean.details) clean.item_details = clean.details;
+        }
+        
+        if (tableName === 'products') {
+            if (clean.product_name) clean.item_name = clean.product_name;
+        }
 
-        // Force convert numbers to avoid SQL type errors
-        ['amount', 'balance', 'total_amount', 'stock_level', 'selling_price', 'buying_price'].forEach(f => {
-            if (r[f] !== undefined) r[f] = parseFloat(r[f]) || 0;
+        // 3. DATA TYPE CLEANING (Forces numbers to be numbers, not strings)
+        const numericFields = ['amount', 'balance', 'total_amount', 'quantity', 'stock_level', 'buying_price', 'selling_price', 'reorder_level'];
+        numericFields.forEach(field => {
+            if (clean[field] !== undefined) {
+                clean[field] = parseFloat(clean[field]) || 0;
+            }
         });
 
-        return r;
+        // 4. SECURITY (Remove local Android IDs that crash Supabase)
+        delete clean._id;
+        delete clean.id;
+        delete clean.is_synced;
+        delete clean.timestamp;
+
+        return clean;
     });
+};
+
+app.post('/:table', async (req, res) => {
+    let target = req.params.table;
+    
+    // Redirect table names if the app uses different names
+    if (target === 'mpesa_transactions') target = 'mpesa_sales';
+    
+    let incomingData = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        // Use standard Insert to get data in safely
-        const { error } = await supabase.from(target).insert(cleanRows);
+        const finalData = mapToSupabase(target, incomingData);
+
+        // We use .insert() to ensure every sync attempt results in a record
+        const { error } = await supabase.from(target).insert(finalData);
 
         if (error) {
-            console.error(`❌ REJECTED [${target}]:`, error.message);
-            return res.status(400).send(error.message);
+            console.error(`❌ DB REJECTED [${target}]:`, error.message);
+            return res.status(400).json({ error: error.message });
         }
-        console.log(`✅ SUCCESS: Saved to ${target}`);
+
+        console.log(`✅ SYNC COMPLETE: ${target} (${finalData.length} records)`);
         res.status(200).json({ status: "success" });
+
     } catch (err) {
-        res.status(500).send(err.message);
+        console.error("🔥 SERVER CRASH:", err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-app.listen(process.env.PORT || 10000, '0.0.0.0');
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sauti Bridge Fully Mapped on Port ${PORT}`));
