@@ -4,11 +4,12 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-const SUPABASE_URL = 'https://lzxhbtrpsrnsistngonk.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI';
+const supabase = createClient(
+    'https://lzxhbtrpsrnsistngonk.supabase.co',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
+);
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
+// Onboarding endpoint
 app.post('/register', async (req, res) => {
     try {
         const { error } = await supabase.from('merchants').upsert(req.body, { onConflict: 'shortcode' });
@@ -19,38 +20,37 @@ app.post('/register', async (req, res) => {
     }
 });
 
+// Data sync endpoint
 app.post('/:table', async (req, res) => {
-    const targetTable = req.params.table;
-    let data = Array.isArray(req.body) ? req.body : [req.body];
+    const target = req.params.table;
+    let rows = Array.isArray(req.body) ? req.body : [req.body];
 
-    const cleanData = data.map(row => {
-        const r = { ...row };
+    const cleanRows = rows.map(row => {
+        const r = {};
+        // Transfer all fields sent by SyncManager
+        Object.keys(row).forEach(key => {
+            if (!['_id', 'id', 'is_synced'].includes(key)) {
+                r[key] = (row[key] === "" || row[key] === "null") ? null : row[key];
+            }
+        });
+
+        // Ensure we always have a timestamp
+        if (!r.timestamp) r.timestamp = new Date().toISOString();
         
-        // FIX: Ensure product_id is never null for sales
-        if (targetTable === 'sales_history' && !r.product_id) {
-            r.product_id = 0; 
-        }
-
-        // Standardize timestamps
-        r.timestamp = r.timestamp || new Date().toISOString();
-
-        // Remove local SQLite metadata that Supabase doesn't want
-        delete r._id; 
-        delete r.id; 
-        delete r.is_synced;
-
         return r;
     });
 
     try {
-        const { error } = await supabase.from(targetTable).insert(cleanData);
-        if (error) throw error;
+        const { error } = await supabase.from(target).insert(cleanRows);
+        if (error) {
+            console.error(`❌ DB Error [${target}]:`, error.message);
+            return res.status(400).send(error.message);
+        }
+        console.log(`✅ ${target} synced successfully.`);
         res.status(200).json({ status: "success" });
     } catch (err) {
-        console.error(`Error in ${targetTable}:`, err.message);
-        res.status(400).send(err.message);
+        res.status(500).send(err.message);
     }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Sauti Bridge Active`));
+app.listen(process.env.PORT || 10000, '0.0.0.0');
