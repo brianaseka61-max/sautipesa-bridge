@@ -18,31 +18,32 @@ app.post('/:table', async (req, res) => {
     const cleanRows = rows.map(row => {
         const r = { ...row };
         
-        // Fix Date: If timestamp exists, move it to created_at. 
-        // If created_at is empty/null, DELETE it so Supabase uses DEFAULT NOW()
-        if (r.timestamp) r.created_at = r.timestamp;
-        if (!r.created_at || r.created_at === "" || r.created_at === "null") {
-            delete r.created_at;
+        // Fix the Date Error: Always provide a valid ISO string if missing
+        if (r.timestamp && r.timestamp.length > 5) {
+            r.created_at = r.timestamp;
+        } else {
+            r.created_at = new Date().toISOString();
         }
-        delete r.timestamp;
+        
+        // Final Safety: Remove fields that don't belong in SQL
+        delete r.timestamp; delete r._id; delete r.id; delete r.is_synced;
 
-        // Ensure numbers are numbers
-        const numFields = ['amount', 'balance', 'total_amount', 'price', 'quantity', 'stock_level', 'buying_price', 'selling_price'];
-        numFields.forEach(f => { if (r[f]) r[f] = parseFloat(r[f]) || 0; });
+        // Force convert numbers
+        const nums = ['amount', 'balance', 'total_amount', 'stock_level', 'selling_price', 'buying_price'];
+        nums.forEach(f => { if (r[f] !== undefined) r[f] = parseFloat(r[f]) || 0; });
 
-        // Remove ID fields to let Supabase handle them
-        delete r._id; delete r.id; delete r.is_synced;
         return r;
     });
 
     try {
-        const key = (target === 'products') ? 'merchant_shortcode,item_name' : 'merchant_shortcode,created_at';
-        const { error } = await supabase.from(target).upsert(cleanRows, { onConflict: key });
+        // Use .insert() instead of .upsert() to avoid "Conflict" and "Constraint" errors
+        const { error } = await supabase.from(target).insert(cleanRows);
 
         if (error) {
-            console.error(`❌ ERROR [${target}]:`, error.message);
+            console.error(`❌ DB REJECTED [${target}]:`, error.message);
             return res.status(400).send(error.message);
         }
+        console.log(`✅ DATA SAVED: ${target}`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
