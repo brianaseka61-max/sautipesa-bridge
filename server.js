@@ -22,35 +22,38 @@ app.post('/register', async (req, res) => {
 
 // Data sync endpoint
 app.post('/:table', async (req, res) => {
-    const target = req.params.table;
-    let rows = Array.isArray(req.body) ? req.body : [req.body];
+    const targetTable = req.params.table;
+    let incomingRows = Array.isArray(req.body) ? req.body : [req.body];
 
-    const cleanRows = rows.map(row => {
-        const r = {};
-        // Transfer all fields sent by SyncManager
+    const processedData = incomingRows.map(row => {
+        const clean = {};
+        
+        // Loop through every key the App sent
         Object.keys(row).forEach(key => {
+            // Only skip local SQLite internal IDs
             if (!['_id', 'id', 'is_synced'].includes(key)) {
-                r[key] = (row[key] === "" || row[key] === "null") ? null : row[key];
+                clean[key] = (row[key] === "" || row[key] === "null") ? null : row[key];
             }
         });
 
-        // Ensure we always have a timestamp
-        if (!r.timestamp) r.timestamp = new Date().toISOString();
-        
-        return r;
+        // Ensure timestamp is valid
+        if (!clean.timestamp) clean.timestamp = new Date().toISOString();
+
+        return clean;
     });
 
     try {
-        const { error } = await supabase.from(target).insert(cleanRows);
+        const { error } = await supabase.from(targetTable).insert(processedData);
         if (error) {
-            console.error(`❌ DB Error [${target}]:`, error.message);
+            console.error(`❌ DB REJECTED [${targetTable}]:`, error.message);
             return res.status(400).send(error.message);
         }
-        console.log(`✅ ${target} synced successfully.`);
+        console.log(`✅ SUCCESS: ${targetTable} synced.`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
     }
 });
 
-app.listen(process.env.PORT || 10000, '0.0.0.0');
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0');
