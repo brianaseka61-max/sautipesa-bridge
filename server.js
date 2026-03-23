@@ -9,38 +9,39 @@ const supabase = createClient(
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
 );
 
-const forceClean = (table, data) => {
+const sanitize = (table, data) => {
     return data.map(item => {
-        const clean = { ...item };
+        const row = { ...item };
 
-        // 🛠️ DATE FIX: The app sends 'timestamp', DB wants 'created_at'
-        const dateVal = clean.created_at || clean.timestamp;
-        if (dateVal && dateVal !== "" && dateVal !== "null") {
-            clean.created_at = dateVal;
+        // 1. DATE DEFENSE: If timestamp is invalid/empty, remove it so DB handles it
+        const rawDate = row.created_at || row.timestamp;
+        if (rawDate && rawDate.length > 5) {
+            row.created_at = rawDate;
         } else {
-            delete clean.created_at; // Let SQL default to NOW()
+            delete row.created_at;
         }
-        delete clean.timestamp;
+        delete row.timestamp;
 
-        // 🛠️ COLUMN MAPPING
-        if (table === 'products' && clean.item_name) clean.product_name = clean.item_name;
+        // 2. MAPPING DEFENSE
+        if (table === 'products' && row.item_name) row.product_name = row.item_name;
         if (table === 'debts') {
-            if (clean.customer_phone) clean.phone_number = clean.customer_phone;
-            if (clean.item_details) clean.details = clean.item_details;
+            if (row.customer_phone) row.phone_number = row.customer_phone;
+            if (row.item_details) row.details = row.item_details;
         }
-        if (table === 'appointments' && clean.appointment_date) clean.date = clean.appointment_date;
+        if (table === 'appointments' && row.appointment_date) row.date = row.appointment_date;
 
-        // 🛠️ NUMERIC ENFORCEMENT
-        const nums = ['amount', 'balance', 'total_amount', 'price', 'quantity', 'stock_level', 'buying_price', 'selling_price'];
-        nums.forEach(n => {
-            if (clean.hasOwnProperty(n)) {
-                clean[n] = parseFloat(clean[n]) || 0;
+        // 3. NUMBER DEFENSE: Prevent "" or null from crashing NUMERIC columns
+        const numericCols = ['amount', 'balance', 'total_amount', 'price', 'quantity', 'stock_level', 'buying_price', 'selling_price', 'reorder_level'];
+        numericCols.forEach(col => {
+            if (row.hasOwnProperty(col)) {
+                const val = parseFloat(row[col]);
+                row[col] = isNaN(val) ? 0 : val;
             }
         });
 
-        // Remove ID artifacts
-        delete clean._id; delete clean.id; delete clean.is_synced;
-        return clean;
+        // 4. CLEANUP: Remove local SQLite keys
+        delete row._id; delete row.id; delete row.is_synced;
+        return row;
     });
 };
 
@@ -51,16 +52,16 @@ app.post('/:table', async (req, res) => {
     let body = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        const data = forceClean(target, body);
-        const key = (target === 'products') ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
+        const cleanData = sanitize(target, body);
+        const conflictKey = (target === 'products') ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
 
-        const { error } = await supabase.from(target).upsert(data, { onConflict: key });
+        const { error } = await supabase.from(target).upsert(cleanData, { onConflict: conflictKey });
 
         if (error) {
-            console.error(`❌ DB REJECTED [${target}]:`, error.message);
+            console.error(`❌ ERROR [${target}]:`, error.message);
             return res.status(400).send(error.message);
         }
-        console.log(`✅ SYNCED: ${target}`);
+        console.log(`✅ SYNCED: ${target} (${cleanData.length} rows)`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
