@@ -9,74 +9,59 @@ const supabase = createClient(
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
 );
 
-// THE TRANSLATOR FUNCTION
-const mapToSupabase = (tableName, data) => {
-    return data.map(item => {
-        const clean = { ...item };
+app.post('/:table', async (req, res) => {
+    let target = req.params.table;
+    if (target === 'mpesa_transactions') target = 'mpesa_sales';
+    
+    let incomingRows = Array.isArray(req.body) ? req.body : [req.body];
 
-        // 1. DATE HANDSHAKE (Solves the 'null created_at' error)
-        const dateSource = clean.created_at || clean.timestamp || clean.appointment_date;
-        if (dateSource && dateSource.length > 5) {
-            clean.created_at = dateSource;
-        } else {
-            clean.created_at = new Date().toISOString(); 
-        }
-
-        // 2. FIELD MAPPING (Ensures App fields match SQL columns)
-        if (tableName === 'debts') {
-            if (clean.phone_number) clean.customer_phone = clean.phone_number;
-            if (clean.details) clean.item_details = clean.details;
-        }
+    const finalizedRows = incomingRows.map(row => {
+        const clean = {};
         
-        if (tableName === 'products') {
-            if (clean.product_name) clean.item_name = clean.product_name;
+        // 1. THE DATE FIX (Crucial for your error)
+        // If app sends 'timestamp', move it to 'created_at'. 
+        // If both are empty, let Supabase handle it via DEFAULT NOW().
+        const dateVal = row.timestamp || row.created_at;
+        if (dateVal && dateVal !== "null" && dateVal !== "") {
+            clean.created_at = dateVal;
         }
 
-        // 3. DATA TYPE CLEANING (Forces numbers to be numbers, not strings)
-        const numericFields = ['amount', 'balance', 'total_amount', 'quantity', 'stock_level', 'buying_price', 'selling_price', 'reorder_level'];
-        numericFields.forEach(field => {
-            if (clean[field] !== undefined) {
-                clean[field] = parseFloat(clean[field]) || 0;
+        // 2. COLUMN MAPPING (Ensures App matches SQL)
+        if (row.item_name) clean.item_name = row.item_name;
+        if (row.customer_phone) clean.customer_phone = row.customer_phone;
+        if (row.item_details) clean.item_details = row.item_details;
+        if (row.product_name) clean.item_name = row.product_name;
+
+        // 3. COPY ALL OTHER FIELDS
+        Object.keys(row).forEach(key => {
+            if (!['timestamp', 'created_at', '_id', 'id', 'is_synced'].includes(key)) {
+                clean[key] = row[key];
             }
         });
 
-        // 4. SECURITY (Remove local Android IDs that crash Supabase)
-        delete clean._id;
-        delete clean.id;
-        delete clean.is_synced;
-        delete clean.timestamp;
+        // 4. NUMBER CLEANING
+        const nums = ['amount', 'total_amount', 'balance', 'quantity', 'stock_level', 'selling_price', 'buying_price'];
+        nums.forEach(f => {
+            if (clean[f]) clean[f] = parseFloat(clean[f]) || 0;
+        });
 
         return clean;
     });
-};
-
-app.post('/:table', async (req, res) => {
-    let target = req.params.table;
-    
-    // Redirect table names if the app uses different names
-    if (target === 'mpesa_transactions') target = 'mpesa_sales';
-    
-    let incomingData = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        const finalData = mapToSupabase(target, incomingData);
-
-        // We use .insert() to ensure every sync attempt results in a record
-        const { error } = await supabase.from(target).insert(finalData);
+        // Insert data into Supabase
+        const { error } = await supabase.from(target).insert(finalizedRows);
 
         if (error) {
             console.error(`❌ DB REJECTED [${target}]:`, error.message);
-            return res.status(400).json({ error: error.message });
+            return res.status(400).send(error.message);
         }
 
-        console.log(`✅ SYNC COMPLETE: ${target} (${finalData.length} records)`);
+        console.log(`✅ SYNC SUCCESS: ${target}`);
         res.status(200).json({ status: "success" });
-
     } catch (err) {
-        console.error("🔥 SERVER CRASH:", err.message);
-        res.status(500).json({ error: err.message });
+        res.status(500).send(err.message);
     }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sauti Bridge Fully Mapped on Port ${PORT}`));
+app.listen(process.env.PORT || 10000, '0.0.0.0');
