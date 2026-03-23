@@ -9,25 +9,26 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-/**
- * 🛠️ DATA SANITIZATION ENGINE
- * Matches every table and field from the Sauti Pesa DatabaseHelper.
- */
-const sanitizeData = (table, data) => {
+const cleanAndMap = (table, data) => {
     return data.map(item => {
         const cleaned = { ...item };
 
-        // 1. Universal Date Mapping (Standardizing timestamp/created_at)
-        const rawDate = cleaned.created_at || cleaned.timestamp || new Date().toISOString();
-        cleaned.created_at = rawDate;
+        // 1. DATE STANDARDIZATION
+        cleaned.created_at = cleaned.created_at || cleaned.timestamp || new Date().toISOString();
         delete cleaned.timestamp;
 
-        // 2. Numeric Cleaning per Table (Prevents "Numeric Syntax" errors)
-        const numericFields = [
-            'total_amount', 'amount', 'price', 'buying_price', 
-            'selling_price', 'stock_level', 'reorder_level', 'quantity', 'balance'
-        ];
+        // 2. COLUMN MAPPING (The "Bridge" between Android names and SQL names)
+        if (table === 'debts') {
+            if (cleaned.customer_phone) { cleaned.phone_number = cleaned.customer_phone; delete cleaned.customer_phone; }
+            if (cleaned.item_details) { cleaned.details = cleaned.item_details; delete cleaned.item_details; }
+        }
+        
+        if (table === 'appointments') {
+            if (cleaned.appointment_date) { cleaned.date = cleaned.appointment_date; delete cleaned.appointment_date; }
+        }
 
+        // 3. NUMERIC STABILITY
+        const numericFields = ['total_amount', 'amount', 'price', 'buying_price', 'selling_price', 'stock_level', 'quantity', 'balance'];
         numericFields.forEach(field => {
             if (cleaned.hasOwnProperty(field)) {
                 if (cleaned[field] === "" || cleaned[field] === null || cleaned[field] === "null") {
@@ -38,60 +39,40 @@ const sanitizeData = (table, data) => {
             }
         });
 
-        // 3. Table Specific logic for Debt and Inventory
-        if (table === 'debts' && !cleaned.status) cleaned.status = 'Unpaid';
-        if (table === 'products' && !cleaned.reorder_level) cleaned.reorder_level = 5;
-
         return cleaned;
     });
 };
-
-app.get('/', (req, res) => {
-    res.status(200).send("🚀 SautiPesa Bridge: Fully Synced with DatabaseHelper.");
-});
 
 app.post('/:targetTable', async (req, res) => {
     const { targetTable } = req.params;
     let data = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        const cleanedData = sanitizeData(targetTable, data);
+        const cleanedData = cleanAndMap(targetTable, data);
         
-        // Use the exact table names from your DatabaseHelper
-        let supabaseTable = targetTable;
-        if (targetTable === 'mpesa_transactions') supabaseTable = 'mpesa_sales';
-        if (targetTable === 'debt_history') supabaseTable = 'debts'; // Mapping debt sales to debts table
+        // Dynamic Conflict Clause
+        const conflictColumns = targetTable === 'products' ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
 
         const { error } = await supabase
-            .from(supabaseTable)
+            .from(targetTable)
             .upsert(cleanedData, { 
-                onConflict: supabaseTable === 'products' ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at', 
+                onConflict: conflictColumns, 
                 ignoreDuplicates: true 
             });
 
         if (error) {
-            console.error(`❌ ERROR in ${supabaseTable}:`, error.message);
+            console.error(`❌ SQL REJECTED [${targetTable}]:`, error.message);
             return res.status(400).json({ error: error.message });
         }
 
-        console.log(`✅ SYNC SUCCESS: ${cleanedData.length} records to ${supabaseTable}`);
+        console.log(`✅ SUCCESS: ${targetTable} sync.`);
         res.status(200).json({ status: "success" });
 
     } catch (err) {
-        console.error("❌ CRITICAL ERROR:", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post('/register', async (req, res) => {
-    try {
-        const { error } = await supabase.from('merchants').upsert([req.body], { onConflict: 'shortcode' });
-        if (error) throw error;
-        res.status(200).json({ status: "success" });
-    } catch (err) {
+        console.error("❌ SYSTEM ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`📡 Bridge Active on ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`📡 Sauti Bridge Active`));
