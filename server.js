@@ -11,53 +11,61 @@ const supabase = createClient(
 
 app.post('/:table', async (req, res) => {
     let target = req.params.table;
-    if (target === 'mpesa_transactions') target = 'mpesa_sales';
+    // Map internal app table names to Supabase table names
+    if (target === 'transactions') target = 'mpesa_sales';
     
     let incomingRows = Array.isArray(req.body) ? req.body : [req.body];
 
-    const finalizedRows = incomingRows.map(row => {
+    const finalData = incomingRows.map(row => {
         const clean = {};
-        
-        // 1. THE DATE FIX (Crucial for your error)
-        // If app sends 'timestamp', move it to 'created_at'. 
-        // If both are empty, let Supabase handle it via DEFAULT NOW().
-        const dateVal = row.timestamp || row.created_at;
-        if (dateVal && dateVal !== "null" && dateVal !== "") {
-            clean.created_at = dateVal;
-        }
 
-        // 2. COLUMN MAPPING (Ensures App matches SQL)
-        if (row.item_name) clean.item_name = row.item_name;
-        if (row.customer_phone) clean.customer_phone = row.customer_phone;
-        if (row.item_details) clean.item_details = row.item_details;
-        if (row.product_name) clean.item_name = row.product_name;
+        // 1. DYNAMIC COLUMN MAPPING (App Name -> Supabase Name)
+        const mapping = {
+            'timestamp': 'created_at',
+            'product_name': 'item_name',
+            'total_sale': 'total_amount',
+            'quantity_sold': 'quantity',
+            'customer_number': 'customer_phone',
+            'total_debt_amount': 'amount',
+            'remaining_balance': 'balance',
+            'description': 'details',
+            'selling_price_unit': 'selling_price',
+            'buying_price_bulk': 'buying_price',
+            'current_quantity': 'stock_level',
+            'interest': 'notes'
+        };
 
-        // 3. COPY ALL OTHER FIELDS
         Object.keys(row).forEach(key => {
-            if (!['timestamp', 'created_at', '_id', 'id', 'is_synced'].includes(key)) {
-                clean[key] = row[key];
+            const newKey = mapping[key] || key;
+            
+            // Skip local Android IDs and sync flags
+            if (!['_id', 'id', 'is_synced'].includes(key)) {
+                let value = row[key];
+                
+                // Convert empty strings to null for better DB handling
+                if (value === "" || value === "null") value = null;
+                
+                clean[newKey] = value;
             }
         });
 
-        // 4. NUMBER CLEANING
-        const nums = ['amount', 'total_amount', 'balance', 'quantity', 'stock_level', 'selling_price', 'buying_price'];
-        nums.forEach(f => {
-            if (clean[f]) clean[f] = parseFloat(clean[f]) || 0;
-        });
+        // 2. EMERGENCY DATE FIX
+        if (!clean.created_at) {
+            clean.created_at = new Date().toISOString();
+        }
 
         return clean;
     });
 
     try {
-        // Insert data into Supabase
-        const { error } = await supabase.from(target).insert(finalizedRows);
+        const { error } = await supabase.from(target).insert(finalData);
 
         if (error) {
             console.error(`❌ DB REJECTED [${target}]:`, error.message);
             return res.status(400).send(error.message);
         }
 
-        console.log(`✅ SYNC SUCCESS: ${target}`);
+        console.log(`✅ SUCCESS: ${target} synced ${finalData.length} rows.`);
         res.status(200).json({ status: "success" });
     } catch (err) {
         res.status(500).send(err.message);
