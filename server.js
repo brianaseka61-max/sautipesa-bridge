@@ -9,33 +9,35 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const cleanAndMap = (table, data) => {
-    return data.map(item => {
-        const cleaned = { ...item };
+const smartClean = (table, data) => {
+    return data.map(record => {
+        const cleaned = { ...record };
 
-        // 1. DATE STANDARDIZATION
+        // 1. DATE FIX: Force created_at and remove timestamp
         cleaned.created_at = cleaned.created_at || cleaned.timestamp || new Date().toISOString();
         delete cleaned.timestamp;
 
-        // 2. COLUMN MAPPING (The "Bridge" between Android names and SQL names)
-        if (table === 'debts') {
-            if (cleaned.customer_phone) { cleaned.phone_number = cleaned.customer_phone; delete cleaned.customer_phone; }
-            if (cleaned.item_details) { cleaned.details = cleaned.item_details; delete cleaned.item_details; }
+        // 2. MAPPING FIX: Rename incoming fields to match SQL Exactly
+        if (table === 'products') {
+            if (cleaned.item_name) cleaned.product_name = cleaned.item_name;
+            delete cleaned.item_name;
         }
-        
+        if (table === 'debts') {
+            if (cleaned.customer_phone) cleaned.phone_number = cleaned.customer_phone;
+            if (cleaned.item_details) cleaned.details = cleaned.item_details;
+            delete cleaned.customer_phone;
+            delete cleaned.item_details;
+        }
         if (table === 'appointments') {
-            if (cleaned.appointment_date) { cleaned.date = cleaned.appointment_date; delete cleaned.appointment_date; }
+            if (cleaned.appointment_date) cleaned.date = cleaned.appointment_date;
+            delete cleaned.appointment_date;
         }
 
-        // 3. NUMERIC STABILITY
-        const numericFields = ['total_amount', 'amount', 'price', 'buying_price', 'selling_price', 'stock_level', 'quantity', 'balance'];
-        numericFields.forEach(field => {
-            if (cleaned.hasOwnProperty(field)) {
-                if (cleaned[field] === "" || cleaned[field] === null || cleaned[field] === "null") {
-                    cleaned[field] = 0;
-                } else {
-                    cleaned[field] = parseFloat(cleaned[field]) || 0;
-                }
+        // 3. NUMERIC FIX: Prevent empty strings from crashing SQL
+        const numericColumns = ['amount', 'balance', 'total_amount', 'price', 'quantity', 'stock_level', 'buying_price', 'selling_price', 'reorder_level'];
+        numericColumns.forEach(col => {
+            if (cleaned.hasOwnProperty(col)) {
+                cleaned[col] = parseFloat(cleaned[col]) || 0;
             }
         });
 
@@ -48,31 +50,29 @@ app.post('/:targetTable', async (req, res) => {
     let data = Array.isArray(req.body) ? req.body : [req.body];
 
     try {
-        const cleanedData = cleanAndMap(targetTable, data);
+        const cleanedData = smartClean(targetTable, data);
         
-        // Dynamic Conflict Clause
-        const conflictColumns = targetTable === 'products' ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
+        // Use product_name for inventory conflicts, created_at for everything else
+        const conflictKey = (targetTable === 'products') ? 'merchant_shortcode,product_name' : 'merchant_shortcode,created_at';
 
         const { error } = await supabase
             .from(targetTable)
             .upsert(cleanedData, { 
-                onConflict: conflictColumns, 
+                onConflict: conflictKey, 
                 ignoreDuplicates: true 
             });
 
         if (error) {
-            console.error(`❌ SQL REJECTED [${targetTable}]:`, error.message);
+            console.error(`❌ SQL ERROR [${targetTable}]:`, error.message);
             return res.status(400).json({ error: error.message });
         }
 
-        console.log(`✅ SUCCESS: ${targetTable} sync.`);
+        console.log(`✅ SUCCESS: ${targetTable} updated.`);
         res.status(200).json({ status: "success" });
-
     } catch (err) {
-        console.error("❌ SYSTEM ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`📡 Sauti Bridge Active`));
+app.listen(PORT, '0.0.0.0', () => console.log(`📡 Sauti Bridge Live`));
