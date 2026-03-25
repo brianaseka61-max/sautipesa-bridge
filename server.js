@@ -43,8 +43,8 @@ app.post('/:table', async (req, res) => {
                 value = null;
             }
 
-            // Map keys and fix dates (Added appointment_date to the list)
-            if (lowerKey === 'timestamp' || lowerKey === 'date' || lowerKey === 'created_at' || lowerKey === 'appointment_date') {
+            // Map keys and fix dates
+            if (['timestamp', 'date', 'created_at', 'appointment_date'].includes(lowerKey)) {
                 r[lowerKey] = fixDateFormat(value);
             } else {
                 r[lowerKey] = value;
@@ -59,7 +59,7 @@ app.post('/:table', async (req, res) => {
         const { error } = await supabase.from(table).insert(cleanRows);
         if (error) {
             console.error(`❌ DB Error [${table}]:`, error.message);
-            // If it's a "column not found" error, we log the payload to help you see what's missing
+            // Logging attempted columns helps identify missing database fields
             console.error(`Attempted Columns:`, Object.keys(cleanRows[0]));
             return res.status(400).json({ error: error.message });
         }
