@@ -43,8 +43,8 @@ app.post('/:table', async (req, res) => {
                 value = null;
             }
 
-            // Map keys and fix dates
-            if (lowerKey === 'timestamp' || lowerKey === 'date' || lowerKey === 'created_at') {
+            // Map keys and fix dates (Added appointment_date to the list)
+            if (lowerKey === 'timestamp' || lowerKey === 'date' || lowerKey === 'created_at' || lowerKey === 'appointment_date') {
                 r[lowerKey] = fixDateFormat(value);
             } else {
                 r[lowerKey] = value;
