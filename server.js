@@ -46,12 +46,18 @@ app.post('/:table', async (req, res) => {
             // Map keys and fix dates
             if (['timestamp', 'date', 'created_at', 'appointment_date'].includes(lowerKey)) {
                 r[lowerKey] = fixDateFormat(value);
+            } else if (['sub_county', 'ward', 'precise_location', 'data_sharing_consent'].includes(lowerKey)) {
+                // Ensure new registration/location fields are mapped correctly
+                r[lowerKey] = value;
             } else {
                 r[lowerKey] = value;
             }
         });
 
-        if (!r.timestamp) r.timestamp = new Date().toISOString();
+        // Ensure timestamp exists for records that require it, unless it's a profile/user update
+        if (!r.timestamp && table !== 'merchants' && table !== 'users') {
+            r.timestamp = new Date().toISOString();
+        }
         return r;
     });
 
