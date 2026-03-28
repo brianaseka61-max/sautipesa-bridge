@@ -9,6 +9,11 @@ const supabase = createClient(
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6eGhidHJwc3Juc2lzdG5nb25rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTUyMDI5MSwiZXhwIjoyMDg3MDk2MjkxfQ.EAGXtILYQ-dNrMxs_WeQvAxtsKeIIDqlmnOyFauAAHI'
 );
 
+// --- NEW STATUS ROUTE (Fixes the 404 Error) ---
+app.get('/', (req, res) => {
+    res.status(200).send("🚀 Sauti Pesa Bridge is Active and Running!");
+});
+
 // Fixes Kenyan date format 'DD/MM/YY' to ISO for Postgres
 function fixDateFormat(dateStr) {
     if (!dateStr || typeof dateStr !== 'string' || !dateStr.includes('/')) return new Date().toISOString();
@@ -47,14 +52,12 @@ app.post('/:table', async (req, res) => {
             if (['timestamp', 'date', 'created_at', 'appointment_date'].includes(lowerKey)) {
                 r[lowerKey] = fixDateFormat(value);
             } else if (['sub_county', 'ward', 'precise_location', 'data_sharing_consent'].includes(lowerKey)) {
-                // Ensure new registration/location fields are mapped correctly
                 r[lowerKey] = value;
             } else {
                 r[lowerKey] = value;
             }
         });
 
-        // Ensure timestamp exists for records that require it, unless it's a profile/user update
         if (!r.timestamp && table !== 'merchants' && table !== 'users') {
             r.timestamp = new Date().toISOString();
         }
@@ -65,7 +68,6 @@ app.post('/:table', async (req, res) => {
         const { error } = await supabase.from(table).insert(cleanRows);
         if (error) {
             console.error(`❌ DB Error [${table}]:`, error.message);
-            // Logging attempted columns helps identify missing database fields
             console.error(`Attempted Columns:`, Object.keys(cleanRows[0]));
             return res.status(400).json({ error: error.message });
         }
