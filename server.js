@@ -13,35 +13,43 @@ app.get('/', (req, res) => {
     res.status(200).send("🚀 Sauti Pesa Bridge is Active!");
 });
 
-// 1. DARAJA CONFIRMATION URL
-// This is where Safaricom sends the payment data
+// 1. DARAJA VALIDATION URL (FIXES THE 500 ERROR)
+// Safaricom hits this FIRST to ask: "Should I process this payment?"
+app.post('/api/daraja/validation', (req, res) => {
+    console.log("🔍 Safaricom is validating a transaction...");
+    // You MUST return ResultCode 0 to accept the payment
+    res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+});
+
+// 2. DARAJA CONFIRMATION URL
+// Safaricom hits this SECOND with the actual money data
 app.post('/api/daraja/confirmation', (req, res) => {
     const paymentData = req.body;
     const tillNumber = paymentData.BusinessShortCode;
-
+    
     console.log(`💰 Payment received for Till: ${tillNumber}`);
-
+    
     // Push the transaction to the specific "room" (the phone listening for this Till)
     io.to(tillNumber).emit('new_payment', {
         amount: paymentData.TransAmount,
         customerName: paymentData.FirstName + " " + paymentData.LastName,
         time: paymentData.TransTime
     });
-
+    
     // Safaricom requires a 200 OK response immediately
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
-// 2. SOCKET.IO REAL-TIME LOGIC
+// 3. SOCKET.IO REAL-TIME LOGIC
 io.on('connection', (socket) => {
     console.log('📱 Phone connected:', socket.id);
-
+    
     // Business registers their Till Number
     socket.on('register_business', (tillNumber) => {
         socket.join(tillNumber);
         console.log(`✅ Business registered for Till: ${tillNumber}`);
     });
-
+    
     socket.on('disconnect', () => {
         console.log('📱 Phone disconnected');
     });
