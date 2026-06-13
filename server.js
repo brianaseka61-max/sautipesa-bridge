@@ -10,48 +10,49 @@ app.use(express.json());
 
 // Status Check Route
 app.get('/', (req, res) => {
-    res.status(200).send("🚀 Sauti Pesa Bridge is Active!");
+    res.status(200).send("🚀 Sauti Pesa Bridge is Active and Running!");
 });
 
-// 1. DARAJA VALIDATION URL (FIXES THE 500 ERROR)
-// Safaricom hits this FIRST to ask: "Should I process this payment?"
+// 1. DARAJA VALIDATION URL
+// Safaricom hits this FIRST to verify the transaction.
 app.post('/api/daraja/validation', (req, res) => {
-    console.log("🔍 Safaricom is validating a transaction...");
-    // You MUST return ResultCode 0 to accept the payment
+    console.log("🔍 Safaricom is validating an incoming transaction...");
+    // Return ResultCode 0 to tell Safaricom to accept the payment
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
 // 2. DARAJA CONFIRMATION URL
-// Safaricom hits this SECOND with the actual money data
+// Safaricom hits this SECOND with the finalized payment details.
 app.post('/api/daraja/confirmation', (req, res) => {
     const paymentData = req.body;
     const tillNumber = paymentData.BusinessShortCode;
     
-    console.log(`💰 Payment received for Till: ${tillNumber}`);
+    console.log(`💰 Payment received for Till/Paybill: ${tillNumber}`);
+    console.log(`💵 Amount: Kes ${paymentData.TransAmount} from ${paymentData.FirstName} ${paymentData.LastName}`);
     
-    // Push the transaction to the specific "room" (the phone listening for this Till)
+    // Broadcast the transaction via Socket.io to the specific listening phone
     io.to(tillNumber).emit('new_payment', {
         amount: paymentData.TransAmount,
-        customerName: paymentData.FirstName + " " + paymentData.LastName,
+        customerName: `${paymentData.FirstName} ${paymentData.LastName}`,
         time: paymentData.TransTime
     });
     
-    // Safaricom requires a 200 OK response immediately
+    // Respond to Safaricom immediately to clear the transaction queue
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
-// 3. SOCKET.IO REAL-TIME LOGIC
+// 3. SOCKET.IO REAL-TIME CONNECTIONS
 io.on('connection', (socket) => {
-    console.log('📱 Phone connected:', socket.id);
+    console.log('📱 Phone connected to socket:', socket.id);
     
-    // Business registers their Till Number
+    // When the Android app inputs the Till/Paybill, it joins a secure room
     socket.on('register_business', (tillNumber) => {
         socket.join(tillNumber);
-        console.log(`✅ Business registered for Till: ${tillNumber}`);
+        console.log(`✅ Android App is now listening for Till: ${tillNumber}`);
     });
     
     socket.on('disconnect', () => {
-        console.log('📱 Phone disconnected');
+        console.log('📱 Phone disconnected from socket');
     });
 });
 
