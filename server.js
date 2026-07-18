@@ -1,11 +1,9 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
-
 app.use(express.json());
 
 // Status Check Route
@@ -54,7 +52,27 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log('📱 Phone disconnected from socket');
     });
+
+    // === START ADDED: HEARTBEAT LOOP UPDATE ===
+    // Listen for client heartbeats to keep the connection active
+    socket.on('client_heartbeat', (data) => {
+        console.log(`💓 Client heartbeat received from socket: ${socket.id}`);
+        socket.emit('server_heartbeat_ack', { status: 'alive' });
+    });
+
+    // Acknowledge server-sent heartbeat
+    socket.on('heartbeat_ack', (data) => {
+        // Connection is confirmed alive
+    });
+    // === END ADDED: HEARTBEAT LOOP UPDATE ===
 });
+
+// === START ADDED: SERVER HEARTBEAT LOOP ===
+// Broadcast a heartbeat ping to all connected clients every 30 seconds
+setInterval(() => {
+    io.emit('heartbeat', { timestamp: Date.now() });
+}, 30000);
+// === END ADDED: SERVER HEARTBEAT LOOP ===
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sauti Pesa Bridge LIVE on Port ${PORT}`));
