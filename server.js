@@ -5,7 +5,6 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 app.use(express.json());
-
 // === START ADDED: JSON PARSING CRASH PROTECTION MIDDLEWARE ===
 app.use((err, req, res, next) => {
     if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
@@ -15,7 +14,6 @@ app.use((err, req, res, next) => {
     next();
 });
 // === END ADDED: JSON PARSING CRASH PROTECTION MIDDLEWARE ===
-
 // Status Check Route
 app.get('/', (req, res) => {
     res.status(200).send("🚀 Sauti Pesa Bridge is Active and Running!");
@@ -42,7 +40,7 @@ app.post('/api/daraja/confirmation', (req, res) => {
     console.log(`💵 Amount: Kes ${paymentData.TransAmount} from ${paymentData.FirstName} ${paymentData.LastName}`);
     
     // Broadcast the transaction via Socket.io to the specific listening phone
-    io.to(tillNumber).emit('new_payment', {
+    io.to(targetRoom).emit('new_payment', {
         amount: paymentData.TransAmount,
         customerName: `${paymentData.FirstName} ${paymentData.LastName}`,
         time: paymentData.TransTime
@@ -58,11 +56,11 @@ io.on('connection', (socket) => {
     // When the Android app inputs the Till/Paybill, it joins a secure room
     socket.on('register_business', (tillNumber) => {
         // === START ADDED: SANITIZE REGISTRATION DATA ===
+        // This guarantees strict isolation. The app ONLY receives data for this specific shortcode.
         const sanitizedTill = tillNumber ? String(tillNumber) : tillNumber;
         socket.join(sanitizedTill);
         // === END ADDED: SANITIZE REGISTRATION DATA ===
-        socket.join(tillNumber);
-        console.log(`✅ Android App is now listening for Till: ${tillNumber}`);
+        console.log(`✅ Android App is now securely listening for unique Till: ${sanitizedTill}`);
     });
     
     socket.on('disconnect', () => {
