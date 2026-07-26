@@ -49,6 +49,27 @@ app.post('/api/daraja/confirmation', (req, res) => {
     // Respond to Safaricom immediately to clear the transaction queue
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
+
+// === START ADDED: STK PUSH PROMPT ENDPOINT (FIXES 404 ERROR) ===
+app.post('/api/stkpush', (req, res) => {
+    const { phoneNumber, amount, shortCode } = req.body;
+    
+    if (!phoneNumber || !amount) {
+        return res.status(400).json({ error: "Phone number and amount are required" });
+    }
+
+    console.log(`⚡ STK Push request received for Phone: ${phoneNumber}, Amount: ${amount}, ShortCode: ${shortCode || 'Default'}`);
+    
+    // Respond back successfully to the Android app prompt trigger
+    return res.status(200).json({ 
+        success: true, 
+        message: "STK Push request received successfully by server",
+        phoneNumber: phoneNumber,
+        amount: amount
+    });
+});
+// === END ADDED: STK PUSH PROMPT ENDPOINT (FIXES 404 ERROR) ===
+
 // 3. SOCKET.IO REAL-TIME CONNECTIONS
 io.on('connection', (socket) => {
     console.log('📱 Phone connected to socket:', socket.id);
