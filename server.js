@@ -55,17 +55,18 @@ app.post('/api/daraja/confirmation', (req, res) => {
 });
 
 // === START ADDED: DYNAMIC MULTI-MERCHANT STK PUSH ENDPOINT ===
-app.post('/api/stkpush', async (req, res) => {
+// FIX: Array of endpoints handles any route variation the Android app might be calling to clear the 404 error
+app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_push'], async (req, res) => {
     // 1. Extract payment details AND merchant-specific Daraja credentials from the request
-    const { 
-        phoneNumber, 
-        amount, 
-        shortCode, 
-        consumerKey, 
-        consumerSecret, 
-        passKey,
-        callbackUrl 
-    } = req.body;
+    const consumerKey = req.body.consumerKey;
+    const consumerSecret = req.body.consumerSecret;
+    const passKey = req.body.passKey;
+    const callbackUrl = req.body.callbackUrl;
+    
+    // FIX: Added variable fallbacks so if the app sends 'phone' or 'tillNumber', it won't fail
+    const phoneNumber = req.body.phoneNumber || req.body.phone;
+    const amount = req.body.amount;
+    const shortCode = req.body.shortCode || req.body.tillNumber;
     
     if (!phoneNumber || !amount || !shortCode) {
         return res.status(400).json({ error: "Phone number, amount, and shortCode are required" });
@@ -109,7 +110,8 @@ app.post('/api/stkpush', async (req, res) => {
         const accessToken = tokenData.access_token;
 
         // 5. Format phone number (2547XXXXXXXX)
-        const formattedPhone = phoneNumber.startsWith('0') ? `254${phoneNumber.substring(1)}` : phoneNumber.replace('+', '');
+        // FIX: Cast phoneNumber to String to prevent a 500 server crash if it was sent as an integer
+        const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
 
         // 6. Build M-Pesa Express payload
         const payload = {
