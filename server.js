@@ -55,9 +55,7 @@ app.post('/api/daraja/confirmation', (req, res) => {
 });
 
 // === START ADDED: DYNAMIC MULTI-MERCHANT STK PUSH ENDPOINT ===
-// FIX 1: Catch-all route. This regex intercepts ANY request (GET, POST, PUT) to ANY path containing 'stk'.
 app.all(/^\/.*stk.*/i, async (req, res) => {
-    // FIX 2: Check both body (POST) and query parameters (GET) just in case the Android app is sending the wrong HTTP method
     const payloadSource = Object.keys(req.body).length > 0 ? req.body : req.query;
     
     // 1. Extract payment details AND merchant-specific Daraja credentials from the request
@@ -95,19 +93,34 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
     const password = Buffer.from(`${shortCode}${activePasskey}${timestamp}`).toString('base64');
 
     try {
-        // 4. Authenticate with Safaricom using the merchant's specific Consumer Key & Secret
+        // 4. Authenticate with Safaricom 
         const auth = Buffer.from(`${activeKey}:${activeSecret}`).toString('base64');
         
-        // FIX 3: Switched to Safaricom Live Production URL to allow sending prompts to ANY customer number
-        const tokenResponse = await fetch("https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials", {
+        // FIX: Default to Live Production Environment
+        let darajaEnvironmentUrl = "https://api.safaricom.co.ke";
+        
+        let tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
             method: 'GET',
             headers: { Authorization: `Basic ${auth}` }
         });
         
+        // === START ADDED: SMART AUTO-FAILOVER ENVIRONMENT DETECTION ===
+        // If Production rejects the keys (401), they are likely Sandbox keys. Switch to Sandbox automatically.
+        if (!tokenResponse.ok) {
+            console.log("⚠️ Production Auth failed (Likely Sandbox keys detected). Auto-switching to Sandbox Environment...");
+            darajaEnvironmentUrl = "https://sandbox.safaricom.co.ke";
+            
+            tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
+                method: 'GET',
+                headers: { Authorization: `Basic ${auth}` }
+            });
+        }
+        // === END ADDED: SMART AUTO-FAILOVER ENVIRONMENT DETECTION ===
+        
         if (!tokenResponse.ok) {
             const errData = await tokenResponse.text();
             console.error("❌ Daraja OAuth Failure:", errData);
-            return res.status(401).json({ error: "Failed to authenticate with Daraja. Ensure you are using Live Production Keys.", details: errData });
+            return res.status(401).json({ error: "Failed to authenticate with Daraja. Ensure keys are valid.", details: errData });
         }
         
         const tokenData = await tokenResponse.json();
@@ -122,7 +135,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             Password: password,
             Timestamp: timestamp,
             TransactionType: "CustomerPayBillOnline", // Ensure this is "CustomerBuyGoodsOnline" if targeting Buy Goods Till Numbers
-            Amount: Math.round(Number(amount)), // FIX 4: Safaricom rejects decimals. This ensures the amount is strictly a whole integer.
+            Amount: Math.round(Number(amount)), 
             PartyA: formattedPhone, 
             PartyB: shortCode,
             PhoneNumber: formattedPhone,
@@ -131,8 +144,8 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             TransactionDesc: "Sauti Pesa Payment"
         };
 
-        // 7. Request STK Push trigger (LIVE PRODUCTION ENDPOINT)
-        const pushResponse = await fetch("https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
+        // 7. Request STK Push trigger (Using the Dynamically Detected Environment URL)
+        const pushResponse = await fetch(`${darajaEnvironmentUrl}/mpesa/stkpush/v1/processrequest`, {
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${accessToken}`,
@@ -144,7 +157,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         const pushData = await pushResponse.json();
 
         if (pushData.ResponseCode === "0") {
-            console.log(`✅ STK Push successfully triggered for Till ${shortCode}`);
+            console.log(`✅ STK Push successfully triggered for Till ${shortCode} via ${darajaEnvironmentUrl}`);
             return res.status(200).json({ 
                 success: true, 
                 message: "STK Prompt sent to customer phone",
