@@ -22,35 +22,60 @@ app.get('/', (req, res) => {
 });
 
 // 1. DARAJA VALIDATION URL
-// Safaricom hits this FIRST to verify the transaction.
 app.post('/api/daraja/validation', (req, res) => {
     console.log("🔍 Safaricom is validating an incoming transaction...");
-    // Return ResultCode 0 to tell Safaricom to accept the payment
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
 // 2. DARAJA CONFIRMATION URL
-// Safaricom hits this SECOND with the finalized payment details.
 app.post('/api/daraja/confirmation', (req, res) => {
+    // === START ADDED/UPDATED: HANDLE BOTH STK & C2B CALLBACKS ===
     const paymentData = req.body;
-    const tillNumber = paymentData.BusinessShortCode;
+    
+    // Read the room from the URL query if STK push, or fallback to body for C2B
+    const tillNumber = req.query.room || paymentData.BusinessShortCode;
+    let amount, customerName, time;
+
+    // Detect if this is an STK Push Callback (Different JSON structure than C2B)
+    if (paymentData.Body && paymentData.Body.stkCallback) {
+        const stkCallback = paymentData.Body.stkCallback;
+        
+        // If the user cancelled the pin prompt or had insufficient balance
+        if (stkCallback.ResultCode !== 0) {
+            console.log(`⚠️ STK Push Failed/Cancelled by User. Desc: ${stkCallback.ResultDesc}`);
+            return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+        }
+        
+        // Extract exact payment values from Daraja's deep STK Callback Metadata array
+        const meta = stkCallback.CallbackMetadata?.Item || [];
+        amount = meta.find(i => i.Name === 'Amount')?.Value;
+        const phone = meta.find(i => i.Name === 'PhoneNumber')?.Value;
+        time = meta.find(i => i.Name === 'TransactionDate')?.Value;
+        customerName = `Phone ${phone}`; // STK Push does not provide First/Last Names, only the phone number
+    } else {
+        // Standard C2B Confirmation
+        amount = paymentData.TransAmount;
+        customerName = `${paymentData.FirstName} ${paymentData.LastName}`;
+        time = paymentData.TransTime;
+    }
+    // === END ADDED/UPDATED: HANDLE BOTH STK & C2B CALLBACKS ===
     
     // === START ADDED: ROOM STRING TYPE SAFETY VERIFICATION ===
-    // Ensures that even if the shortcode arrives as a number, it matches the string room registered by the app
-    const targetRoom = tillNumber ? String(tillNumber) : tillNumber;
+    const targetRoom = tillNumber ? String(tillNumber) : null;
     // === END ADDED: ROOM STRING TYPE SAFETY VERIFICATION ===
     
-    console.log(`💰 Payment received for Till/Paybill: ${tillNumber}`);
-    console.log(`💵 Amount: Kes ${paymentData.TransAmount} from ${paymentData.FirstName} ${paymentData.LastName}`);
+    if (targetRoom && amount) {
+        console.log(`💰 Payment received for Till/Paybill Room: ${targetRoom}`);
+        console.log(`💵 Amount: Kes ${amount} from ${customerName}`);
+        
+        // Push socket notification specifically to the registered app
+        io.to(targetRoom).emit('new_payment', {
+            amount: amount,
+            customerName: customerName,
+            time: time
+        });
+    }
     
-    // Broadcast the transaction via Socket.io to the specific listening phone
-    io.to(targetRoom).emit('new_payment', {
-        amount: paymentData.TransAmount,
-        customerName: `${paymentData.FirstName} ${paymentData.LastName}`,
-        time: paymentData.TransTime
-    });
-    
-    // Respond to Safaricom immediately to clear the transaction queue
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
@@ -58,7 +83,6 @@ app.post('/api/daraja/confirmation', (req, res) => {
 app.all(/^\/.*stk.*/i, async (req, res) => {
     const payloadSource = Object.keys(req.body).length > 0 ? req.body : req.query;
     
-    // 1. Extract payment details AND merchant-specific Daraja credentials from the request
     const consumerKey = payloadSource.consumerKey;
     const consumerSecret = payloadSource.consumerSecret;
     const passKey = payloadSource.passKey;
@@ -72,7 +96,6 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         return res.status(400).json({ error: "Phone number, amount, and shortCode are required" });
     }
 
-    // Fallback to default credentials if merchant didn't provide custom keys (for testing)
     const activeKey = consumerKey || "0ydGXEUacH7xLMwMXBZpmOuD9I29S8zzsuWiHGeBK6nBQm8A";
     const activeSecret = consumerSecret || "HGiwyqMhOT52C1lTd78q2khTQ2p6WW6LDmdjrHsJWlbupZNT3CKUleD8NxgumLAk";
     const activePasskey = passKey || "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
@@ -80,7 +103,6 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
 
     console.log(`⚡ Processing dynamic STK Push for Till/Paybill: ${shortCode} -> Phone: ${phoneNumber}, Amount: Kes ${amount}`);
 
-    // 2. Generate strict timestamp (YYYYMMDDHHMMSS)
     const date = new Date();
     const timestamp = date.getFullYear() +
         ("0" + (date.getMonth() + 1)).slice(-2) +
@@ -89,15 +111,11 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         ("0" + date.getMinutes()).slice(-2) +
         ("0" + date.getSeconds()).slice(-2);
 
-    // 3. Generate password using the merchant's specific shortcode & passkey
-    const password = Buffer.from(`${shortCode}${activePasskey}${timestamp}`).toString('base64');
-
     try {
-        // 4. Authenticate with Safaricom 
         const auth = Buffer.from(`${activeKey}:${activeSecret}`).toString('base64');
         
-        // FIX: Default to Live Production Environment
         let darajaEnvironmentUrl = "https://api.safaricom.co.ke";
+        let isSandbox = false;
         
         let tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
             method: 'GET',
@@ -105,10 +123,10 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         });
         
         // === START ADDED: SMART AUTO-FAILOVER ENVIRONMENT DETECTION ===
-        // If Production rejects the keys (401), they are likely Sandbox keys. Switch to Sandbox automatically.
         if (!tokenResponse.ok) {
             console.log("⚠️ Production Auth failed (Likely Sandbox keys detected). Auto-switching to Sandbox Environment...");
             darajaEnvironmentUrl = "https://sandbox.safaricom.co.ke";
+            isSandbox = true;
             
             tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
                 method: 'GET',
@@ -126,25 +144,42 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
 
-        // 5. Format phone number (2547XXXXXXXX)
+        // === START ADDED: STRICT SANDBOX SHORTCODE OVERRIDE FIX ===
+        // Safaricom Sandbox ONLY accepts '174379' for STK push. '600986' fails with "Merchant does not exist".
+        let pushShortCode = shortCode;
+        let pushPasskey = activePasskey;
+        
+        if (isSandbox) {
+            console.log("⚠️ Sandbox Active: Forcing Daraja Payload Shortcode to 174379 to bypass 'Merchant does not exist' STK restriction.");
+            pushShortCode = "174379"; 
+            pushPasskey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"; 
+        }
+        // === END ADDED: STRICT SANDBOX SHORTCODE OVERRIDE FIX ===
+
+        // 4. Generate password strictly AFTER knowing the final push shortcode
+        const password = Buffer.from(`${pushShortCode}${pushPasskey}${timestamp}`).toString('base64');
+
         const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
 
-        // 6. Build M-Pesa Express payload
+        // === START ADDED: CALLBACK ROOM ROUTING ===
+        // We append the original shortCode so the server knows which merchant phone to ping when Safaricom replies via Webhook
+        const callbackWithRoom = `${activeCallback}?room=${shortCode}`;
+        // === END ADDED: CALLBACK ROOM ROUTING ===
+
         const payload = {
-            BusinessShortCode: shortCode,
+            BusinessShortCode: pushShortCode, 
             Password: password,
             Timestamp: timestamp,
-            TransactionType: "CustomerPayBillOnline", // Ensure this is "CustomerBuyGoodsOnline" if targeting Buy Goods Till Numbers
+            TransactionType: "CustomerPayBillOnline",
             Amount: Math.round(Number(amount)), 
             PartyA: formattedPhone, 
-            PartyB: shortCode,
+            PartyB: pushShortCode, 
             PhoneNumber: formattedPhone,
-            CallBackURL: activeCallback,
-            AccountReference: `Till ${shortCode}`,
+            CallBackURL: callbackWithRoom,
+            AccountReference: `Till ${shortCode}`, 
             TransactionDesc: "Sauti Pesa Payment"
         };
 
-        // 7. Request STK Push trigger (Using the Dynamically Detected Environment URL)
         const pushResponse = await fetch(`${darajaEnvironmentUrl}/mpesa/stkpush/v1/processrequest`, {
             method: 'POST',
             headers: {
@@ -157,7 +192,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         const pushData = await pushResponse.json();
 
         if (pushData.ResponseCode === "0") {
-            console.log(`✅ STK Push successfully triggered for Till ${shortCode} via ${darajaEnvironmentUrl}`);
+            console.log(`✅ STK Push successfully triggered via ${darajaEnvironmentUrl}`);
             return res.status(200).json({ 
                 success: true, 
                 message: "STK Prompt sent to customer phone",
@@ -167,7 +202,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             console.error("❌ Safaricom STK Push Error:", pushData);
             return res.status(400).json({ 
                 success: false, 
-                error: pushData.ResponseDescription || "Safaricom rejected the payment prompt",
+                error: pushData.errorMessage || pushData.ResponseDescription || "Safaricom rejected the payment prompt",
                 details: pushData 
             });
         }
@@ -183,36 +218,29 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
 io.on('connection', (socket) => {
     console.log('📱 Phone connected to socket:', socket.id);
     
-    // When the Android app inputs the Till/Paybill, it joins a secure room
     socket.on('register_business', (tillNumber) => {
-        // === START ADDED: SANITIZE REGISTRATION DATA ===
-        // This guarantees strict isolation. The app ONLY receives data for this specific shortcode.
         const sanitizedTill = tillNumber ? String(tillNumber) : tillNumber;
         socket.join(sanitizedTill);
-        // === END ADDED: SANITIZE REGISTRATION DATA ===
         console.log(`✅ Android App is now securely listening for unique Till: ${sanitizedTill}`);
     });
     
     socket.on('disconnect', () => {
         console.log('📱 Phone disconnected from socket');
     });
-    // === START ADDED: HEARTBEAT LOOP UPDATE SIGNALS ===
-    // Listen for client heartbeats to keep the connection active
+    
     socket.on('client_heartbeat', (data) => {
         console.log(`💓 Client heartbeat received from socket: ${socket.id}`);
         socket.emit('server_heartbeat_ack', { status: 'alive' });
     });
-    // Acknowledge server-sent heartbeat
+    
     socket.on('heartbeat_ack', (data) => {
         // Connection is confirmed alive
     });
-    // === END ADDED: HEARTBEAT LOOP UPDATE SIGNALS ===
 });
-// === START ADDED: SERVER HEARTBEAT LOOP ===
-// Broadcast a heartbeat ping to all connected clients every 30 seconds
+
 setInterval(() => {
     io.emit('heartbeat', { timestamp: Date.now() });
 }, 30000);
-// === END ADDED: SERVER HEARTBEAT LOOP ===
+
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Sauti Pesa Bridge LIVE on Port ${PORT}`));
