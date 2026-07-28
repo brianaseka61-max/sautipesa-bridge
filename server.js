@@ -55,18 +55,20 @@ app.post('/api/daraja/confirmation', (req, res) => {
 });
 
 // === START ADDED: DYNAMIC MULTI-MERCHANT STK PUSH ENDPOINT ===
-// FIX: Array of endpoints handles any route variation the Android app might be calling to clear the 404 error
-app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_push'], async (req, res) => {
-    // 1. Extract payment details AND merchant-specific Daraja credentials from the request
-    const consumerKey = req.body.consumerKey;
-    const consumerSecret = req.body.consumerSecret;
-    const passKey = req.body.passKey;
-    const callbackUrl = req.body.callbackUrl;
+// FIX 1: Catch-all route. This regex intercepts ANY request (GET, POST, PUT) to ANY path containing 'stk'.
+app.all(/^\/.*stk.*/i, async (req, res) => {
+    // FIX 2: Check both body (POST) and query parameters (GET) just in case the Android app is sending the wrong HTTP method
+    const payloadSource = Object.keys(req.body).length > 0 ? req.body : req.query;
     
-    // FIX: Added variable fallbacks so if the app sends 'phone' or 'tillNumber', it won't fail
-    const phoneNumber = req.body.phoneNumber || req.body.phone;
-    const amount = req.body.amount;
-    const shortCode = req.body.shortCode || req.body.tillNumber;
+    // 1. Extract payment details AND merchant-specific Daraja credentials from the request
+    const consumerKey = payloadSource.consumerKey;
+    const consumerSecret = payloadSource.consumerSecret;
+    const passKey = payloadSource.passKey;
+    const callbackUrl = payloadSource.callbackUrl;
+    
+    const phoneNumber = payloadSource.phoneNumber || payloadSource.phone;
+    const amount = payloadSource.amount;
+    const shortCode = payloadSource.shortCode || payloadSource.tillNumber;
     
     if (!phoneNumber || !amount || !shortCode) {
         return res.status(400).json({ error: "Phone number, amount, and shortCode are required" });
@@ -95,7 +97,9 @@ app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_pu
     try {
         // 4. Authenticate with Safaricom using the merchant's specific Consumer Key & Secret
         const auth = Buffer.from(`${activeKey}:${activeSecret}`).toString('base64');
-        const tokenResponse = await fetch("https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials", {
+        
+        // FIX 3: Switched to Safaricom Live Production URL to allow sending prompts to ANY customer number
+        const tokenResponse = await fetch("https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials", {
             method: 'GET',
             headers: { Authorization: `Basic ${auth}` }
         });
@@ -103,14 +107,13 @@ app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_pu
         if (!tokenResponse.ok) {
             const errData = await tokenResponse.text();
             console.error("❌ Daraja OAuth Failure:", errData);
-            return res.status(401).json({ error: "Failed to authenticate with Daraja using provided merchant credentials" });
+            return res.status(401).json({ error: "Failed to authenticate with Daraja. Ensure you are using Live Production Keys.", details: errData });
         }
         
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
 
         // 5. Format phone number (2547XXXXXXXX)
-        // FIX: Cast phoneNumber to String to prevent a 500 server crash if it was sent as an integer
         const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
 
         // 6. Build M-Pesa Express payload
@@ -118,8 +121,8 @@ app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_pu
             BusinessShortCode: shortCode,
             Password: password,
             Timestamp: timestamp,
-            TransactionType: "CustomerPayBillOnline", // Use "CustomerBuyGoodsOnline" if targeting Buy Goods Tills
-            Amount: amount,
+            TransactionType: "CustomerPayBillOnline", // Ensure this is "CustomerBuyGoodsOnline" if targeting Buy Goods Till Numbers
+            Amount: Math.round(Number(amount)), // FIX 4: Safaricom rejects decimals. This ensures the amount is strictly a whole integer.
             PartyA: formattedPhone, 
             PartyB: shortCode,
             PhoneNumber: formattedPhone,
@@ -128,8 +131,8 @@ app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_pu
             TransactionDesc: "Sauti Pesa Payment"
         };
 
-        // 7. Request STK Push trigger
-        const pushResponse = await fetch("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
+        // 7. Request STK Push trigger (LIVE PRODUCTION ENDPOINT)
+        const pushResponse = await fetch("https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${accessToken}`,
@@ -158,7 +161,7 @@ app.post(['/api/stkpush', '/stkpush', '/api/daraja/stkpush', '/api/daraja/stk_pu
 
     } catch (error) {
         console.error("❌ Server Error during STK Push Execution:", error);
-        return res.status(500).json({ error: "Internal Bridge Server Error" });
+        return res.status(500).json({ error: "Internal Bridge Server Error", details: error.message });
     }
 });
 // === END ADDED: DYNAMIC MULTI-MERCHANT STK PUSH ENDPOINT ===
