@@ -127,23 +127,29 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
-        // If in Sandbox, use 174379 to avoid error, otherwise use the merchant's unique live shortcode
+        
         let pushShortCode = shortCode;
         let pushPasskey = activePasskey;
         
+        // CRITICAL FIX: If sandbox mode is active and the test key app uses custom shortcodes or standard test shortcode 174379, 
+        // handle the sandbox mapping cleanly without breaking custom merchant identification or throwing Daraja 400 parameter errors.
         if (isSandbox) {
-            console.log("⚠️ Sandbox Active: Routing test shortcode to 174379 sandbox compliance.");
-            pushShortCode = "174379"; 
-            pushPasskey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"; 
+            if (String(shortCode) === "174379" || String(shortCode).length === 6) {
+                pushShortCode = "174379"; 
+                pushPasskey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"; 
+            } else {
+                pushShortCode = shortCode;
+            }
         }
 
-        // Dynamically choose transaction type based on shortcode length or user specification to match accurate account profile
+        // Dynamically choose transaction type based on shortcode structural context to map accurate customer account prompts
         const isBuyGoods = String(pushShortCode).length === 7 || payloadSource.transactionType === 'CustomerBuyGoodsOnline';
         const transactionType = isBuyGoods ? "CustomerBuyGoodsOnline" : "CustomerPayBillOnline";
 
         const password = Buffer.from(`${pushShortCode}${pushPasskey}${timestamp}`).toString('base64');
         const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
         const callbackWithRoom = `${activeCallback}?room=${shortCode}`;
+        
         const payload = {
             BusinessShortCode: pushShortCode, 
             Password: password,
