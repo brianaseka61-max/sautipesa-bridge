@@ -137,9 +137,6 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
         
-        // === FIX APPLIED: STRICT ACCOUNT ROUTING (REMOVED SANDBOX 174379 OVERRIDE) ===
-        // This ensures the push directly targets the specific business account details provided 
-        // by the user and prevents routing to Safaricom's generic test bridge.
         let pushShortCode = shortCode;
         let pushPasskey = passKey || activePasskey;
 
@@ -151,9 +148,12 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
         const callbackWithRoom = `${activeCallback}?room=${shortCode}`;
         
-        // === START ADDED: DIRECT DEVICE SOCKET PUSH ===
-        // This emits the prompt directly to the registered business's Android device room
-        // completely bypassing Daraja's delivery mechanics so the specific account receives it natively.
+        // === START FIX: PRE-EMPTIVE SHORTCODE VALIDATION ===
+        // Safaricom Till/Paybill numbers are generally 5 to 7 digits.
+        // If a 10+ digit personal phone number is passed as the receiving account, Daraja will instantly reject it.
+        const isPersonalPhoneNumber = String(pushShortCode).length >= 9;
+
+        // 1. Emit direct to device socket first regardless
         io.to(String(shortCode)).emit('direct_stk_prompt', {
             amount: Math.round(Number(amount)),
             phoneNumber: formattedPhone,
@@ -162,7 +162,25 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             transactionDesc: transactionDesc
         });
         console.log(`📲 Direct prompt successfully pushed via Socket.io to merchant room: ${shortCode}`);
-        // === END ADDED: DIRECT DEVICE SOCKET PUSH ===
+
+        // 2. Check if the target is a phone number before hitting Daraja
+        if (isPersonalPhoneNumber) {
+            console.log(`⚠️ Merchant account (${pushShortCode}) is a personal phone number. Safaricom STK Push requires a Paybill/Till.`);
+            console.log("🔄 Bypassing Safaricom Daraja API and relying exclusively on Socket direct delivery...");
+            return res.status(200).json({ 
+                success: true, 
+                fallbackActive: true,
+                message: "Target is a personal phone number. Prompt routed exclusively via socket connection.",
+                accountDetails: {
+                    shortCode: shortCode,
+                    accountReference: accountReference,
+                    amount: amount,
+                    phoneNumber: formattedPhone
+                },
+                darajaError: "Bypassed: Safaricom STK Push does not support P2P transfers to personal phone numbers."
+            });
+        }
+        // === END FIX: PRE-EMPTIVE SHORTCODE VALIDATION ===
 
         const payload = {
             BusinessShortCode: pushShortCode, 
@@ -201,9 +219,6 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             // ==========================================
             // === AUTO-FALLBACK: CUSTOM MERCHANT MODE ===
             // ==========================================
-            // Safaricom API may reject real custom accounts in Sandbox mode. Because we already sent 
-            // the prompt directly to the business device via socket above, we gracefully intercept this 
-            // Daraja error and confirm the custom socket delivery was successful.
             console.log("⚠️ Safaricom API rejected payload, but direct socket push was delivered to merchant account.");
             
             return res.status(200).json({ 
