@@ -136,6 +136,11 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             pushShortCode = "174379"; 
             pushPasskey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"; 
         }
+
+        // Dynamically choose transaction type based on shortcode length or user specification to match accurate account profile
+        const isBuyGoods = String(pushShortCode).length === 7 || payloadSource.transactionType === 'CustomerBuyGoodsOnline';
+        const transactionType = isBuyGoods ? "CustomerBuyGoodsOnline" : "CustomerPayBillOnline";
+
         const password = Buffer.from(`${pushShortCode}${pushPasskey}${timestamp}`).toString('base64');
         const formattedPhone = String(phoneNumber).startsWith('0') ? `254${String(phoneNumber).substring(1)}` : String(phoneNumber).replace('+', '');
         const callbackWithRoom = `${activeCallback}?room=${shortCode}`;
@@ -143,14 +148,14 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             BusinessShortCode: pushShortCode, 
             Password: password,
             Timestamp: timestamp,
-            TransactionType: "CustomerPayBillOnline",
+            TransactionType: transactionType,
             Amount: Math.round(Number(amount)), 
             PartyA: formattedPhone, 
             PartyB: pushShortCode, 
             PhoneNumber: formattedPhone,
             CallBackURL: callbackWithRoom,
-            AccountReference: accountReference, // Dynamically maps exact customer account details
-            TransactionDesc: transactionDesc     // Dynamically maps merchant profile description
+            AccountReference: isBuyGoods ? (accountReference || `Till ${pushShortCode}`) : accountReference, 
+            TransactionDesc: transactionDesc 
         };
         const pushResponse = await fetch(`${darajaEnvironmentUrl}/mpesa/stkpush/v1/processrequest`, {
             method: 'POST',
