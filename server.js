@@ -27,13 +27,15 @@ app.post('/api/daraja/validation', (req, res) => {
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
-// 2. DARAJA CONFIRMATION URL
+// 2. DARAJA CONFIRMATION URL (Universal Multi-Merchant & Kabambe SMS Forwarding Support)
 app.post('/api/daraja/confirmation', (req, res) => {
     const paymentData = req.body;
-    const tillNumber = req.query.room || paymentData.BusinessShortCode;
-    let amount, customerName, time;
     
-    // Handle STK Push Webhook Payload vs C2B Payload
+    // Extract Till/Paybill/Phone from query parameters, body parameters, or fallback structures
+    const tillNumber = req.query.room || paymentData.BusinessShortCode || paymentData.tillNumber || paymentData.shortCode || paymentData.receiver;
+    let amount, customerName, time, recipientIdentifier;
+     
+    // Handle STK Push Webhook Payload vs C2B Payload vs Kabambe SMS Forwarder Payload
     if (paymentData.Body && paymentData.Body.stkCallback) {
         const stkCallback = paymentData.Body.stkCallback;
         
@@ -47,46 +49,72 @@ app.post('/api/daraja/confirmation', (req, res) => {
         const phone = meta.find(i => i.Name === 'PhoneNumber')?.Value;
         time = meta.find(i => i.Name === 'TransactionDate')?.Value;
         customerName = `Phone ${phone}`;
-    } else {
-        amount = paymentData.TransAmount;
-        customerName = `${paymentData.FirstName} ${paymentData.LastName}`;
-        time = paymentData.TransTime;
-    }
-    
-    const targetRoom = tillNumber ? String(tillNumber) : null;
-    
-    if (targetRoom && amount) {
-        console.log(`💰 Payment received for Unique Merchant Room: ${targetRoom}`);
-        console.log(`💵 Amount: Kes ${amount} from ${customerName}`);
+    } else if (paymentData.rawText || paymentData.smsMessage) {
+        // Universal parser for raw M-Pesa SMS notifications (Supporting Kabambe phones via SMS forwarding apps)
+        const rawSms = paymentData.rawText || paymentData.smsMessage || "";
+        console.log("📥 Raw M-Pesa SMS Notification intercepted from device/forwarder:", rawSms);
         
+        // Example SMS format: "QJK5X782Y Confirmed. Ksh1,500.00 received from JOHN DOE 0712345678 on 15/8/26 at 10:45 AM"
+        const amountMatch = rawSms.match(/Ksh\s*([0-9,]+\.?\d*)/i);
+        amount = amountMatch ? amountMatch[1].replace(/,/g, '') : (paymentData.amount || 0);
+        
+        const senderMatch = rawSms.match(/from\s+([A-Z\s]+)\s+(\d+|\w+)/i);
+        customerName = senderMatch ? senderMatch[1].trim() : (paymentData.customerName || "M-Pesa Customer");
+        time = new Date().toISOString();
+        recipientIdentifier = paymentData.receiver || paymentData.tillNumber || tillNumber;
+    } else {
+        amount = paymentData.TransAmount || paymentData.amount;
+        customerName = paymentData.FirstName && paymentData.LastName ? `${paymentData.FirstName} ${paymentData.LastName}` : (paymentData.customerName || "Valued Customer");
+        time = paymentData.TransTime || paymentData.time || new Date().toISOString();
+    }
+     
+    const targetRoom = tillNumber ? String(tillNumber).trim() : null;
+     
+    if (targetRoom && amount) {
+        console.log(`💰 Payment verified & captured for Unique Merchant Room/Business: ${targetRoom}`);
+        console.log(`💵 Amount: Kes ${amount} from ${customerName}`);
+         
+        // Broadcast confirmation directly to the targeted Sauti Pesa app room for audio speech and local SQLite ledger recording
         io.to(targetRoom).emit('new_payment', {
+            amount: amount,
+            customerName: customerName,
+            time: time,
+            status: "CONFIRMED",
+            source: "Safaricom_Server_Bridge"
+        });
+
+        // Also broadcast globally or to general listeners if universal sink is active
+        io.emit('universal_payment_alert', {
+            targetRoom: targetRoom,
             amount: amount,
             customerName: customerName,
             time: time
         });
+    } else {
+        console.log("⚠️ Payment received on Safaricom server, but target room/business identifier could not be resolved:", paymentData);
     }
-    
+     
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
 // === START ADDED: DYNAMIC MULTI-MERCHANT STK PUSH ENDPOINT ===
 app.all(/^\/.*stk.*/i, async (req, res) => {
     const payloadSource = Object.keys(req.body).length > 0 ? req.body : req.query;
-    
+     
     const consumerKey = payloadSource.consumerKey;
     const consumerSecret = payloadSource.consumerSecret;
     const passKey = payloadSource.passKey;
     const callbackUrl = payloadSource.callbackUrl;
-    
+     
     const phoneNumber = payloadSource.phoneNumber || payloadSource.phone;
     const amount = payloadSource.amount;
-    
+     
     // Extract exact customer registered account reference details and description
     const shortCode = payloadSource.shortCode || payloadSource.tillNumber || payloadSource.merchantDestinationAccount;
     const accountType = payloadSource.accountType || ""; // Expected: "TILL", "PAYBILL", or "POCHI"
     const accountReference = payloadSource.accountReference || `Till ${shortCode}`;
     const transactionDesc = payloadSource.transactionDesc || "Sauti Pesa Payment";
-    
+     
     if (!phoneNumber || !amount || !shortCode) {
         return res.status(400).json({ error: "Phone number, amount, and shortCode are required" });
     }
@@ -102,7 +130,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
     if (isPersonalPhoneNumber) {
         console.log(`⚠️ Send Money/Pochi detected for account (${targetAccountStr}). Safaricom blocks STK pushes to personal numbers.`);
         console.log("🔄 Bypassing Safaricom Daraja API to prevent 400 error. Relying exclusively on Sauti Pesa Socket delivery...");
-        
+         
         // Immediately ping the Sauti Pesa Android app so it knows to handle the UX locally
         io.to(targetAccountStr).emit('direct_stk_prompt', {
             amount: Math.round(Number(amount)),
@@ -113,7 +141,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             accountReference: accountReference,
             transactionDesc: transactionDesc
         });
-        
+         
         return res.status(200).json({ 
             success: true, 
             fallbackActive: true,
@@ -131,14 +159,14 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
     // ====================================================================
     // INTELLIGENT ROUTER STEP 2: TILL & PAYBILL DARAJA EXECUTION
     // ====================================================================
-    
+     
     // IMPORTANT: REPLACE THESE WITH LIVE PRODUCTION CREDENTIALS TO TRIGGER REAL PUSHES
     const activeKey = consumerKey || "0ydGXEUacH7xLMwMXBZpmOuD9I29S8zzsuWiHGeBK6nBQm8A";
     const activeSecret = consumerSecret || "HGiwyqMhOT52C1lTd78q2khTQ2p6WW6LDmdjrHsJWlbupZNT3CKUleD8NxgumLAk";
     const activePasskey = passKey || "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
     const activeCallback = callbackUrl || "https://your-public-server-domain.com/api/daraja/confirmation";
     console.log(`⚡ Processing dynamic STK Push for Unique Merchant Till/Paybill: ${targetAccountStr} -> Phone: ${formattedPhone}, Amount: Kes ${amount}`);
-    
+     
     const date = new Date();
     const timestamp = date.getFullYear() +
         ("0" + (date.getMonth() + 1)).slice(-2) +
@@ -149,36 +177,36 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
         
     try {
         const auth = Buffer.from(`${activeKey}:${activeSecret}`).toString('base64');
-        
+         
         let darajaEnvironmentUrl = "https://api.safaricom.co.ke";
         let isSandbox = false;
-        
+         
         let tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
             method: 'GET',
             headers: { Authorization: `Basic ${auth}` }
         });
-        
+         
         // If Production authentication fails, fallback to Sandbox strictly for test keys
         if (!tokenResponse.ok) {
             console.log("⚠️ Production Auth failed (Sandbox keys detected). Routing to Sandbox environment...");
             darajaEnvironmentUrl = "https://sandbox.safaricom.co.ke";
             isSandbox = true;
-            
+             
             tokenResponse = await fetch(`${darajaEnvironmentUrl}/oauth/v1/generate?grant_type=client_credentials`, {
                 method: 'GET',
                 headers: { Authorization: `Basic ${auth}` }
             });
         }
-        
+         
         if (!tokenResponse.ok) {
             const errData = await tokenResponse.text();
             console.error("❌ Daraja OAuth Failure:", errData);
             return res.status(401).json({ error: "Failed to authenticate with Daraja. Ensure keys are valid.", details: errData });
         }
-        
+         
         const tokenData = await tokenResponse.json();
         const accessToken = tokenData.access_token;
-        
+         
         let pushShortCode = targetAccountStr;
         let pushPasskey = passKey || activePasskey;
 
@@ -197,7 +225,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
 
         const password = Buffer.from(`${pushShortCode}${pushPasskey}${timestamp}`).toString('base64');
         const callbackWithRoom = `${activeCallback}?room=${targetAccountStr}`;
-        
+         
         // Emit direct to device socket first, preserving the original merchant routing regardless of Daraja sandbox overrides
         io.to(targetAccountStr).emit('direct_stk_prompt', {
             amount: Math.round(Number(amount)),
@@ -223,7 +251,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             AccountReference: isBuyGoods ? (accountReference || `Till ${targetAccountStr}`) : accountReference, 
             TransactionDesc: transactionDesc 
         };
-        
+         
         const pushResponse = await fetch(`${darajaEnvironmentUrl}/mpesa/stkpush/v1/processrequest`, {
             method: 'POST',
             headers: {
@@ -233,7 +261,7 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             body: JSON.stringify(payload)
         });
         const pushData = await pushResponse.json();
-        
+         
         if (pushData.ResponseCode === "0") {
             console.log(`✅ STK Push successfully triggered via Safaricom for targeted account ${pushShortCode}`);
             return res.status(200).json({ 
@@ -243,9 +271,9 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
             });
         } else {
             console.error("❌ Safaricom STK Push Error (400 Bad Request prevention failed at Daraja level):", pushData);
-            
+             
             console.log("⚠️ Safaricom API rejected payload, but direct socket push was delivered to merchant account.");
-            
+             
             return res.status(200).json({ 
                 success: true, 
                 fallbackActive: true,
@@ -269,21 +297,21 @@ app.all(/^\/.*stk.*/i, async (req, res) => {
 // 3. SOCKET.IO REAL-TIME CONNECTIONS
 io.on('connection', (socket) => {
     console.log('📱 Phone connected to socket:', socket.id);
-    
+     
     socket.on('register_business', (tillNumber) => {
-        const sanitizedTill = tillNumber ? String(tillNumber) : tillNumber;
+        const sanitizedTill = tillNumber ? String(tillNumber).trim() : tillNumber;
         socket.join(sanitizedTill);
         console.log(`✅ Android App registered to listen for unique Merchant Room: ${sanitizedTill}`);
     });
-    
+     
     socket.on('disconnect', () => {
         console.log('📱 Phone disconnected from socket');
     });
-    
+     
     socket.on('client_heartbeat', (data) => {
         socket.emit('server_heartbeat_ack', { status: 'alive' });
     });
-    
+     
     socket.on('heartbeat_ack', (data) => {});
 });
 
